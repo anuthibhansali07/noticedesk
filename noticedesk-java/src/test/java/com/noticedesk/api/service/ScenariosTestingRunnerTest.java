@@ -11,18 +11,25 @@ import com.noticedesk.api.service.embedding.EmbeddingService;
 import com.noticedesk.api.service.llm.LlmFactory;
 import com.noticedesk.api.service.rag.CorpusRagSeederService;
 import com.noticedesk.api.service.rag.RagStoreService;
+import com.noticedesk.api.testsupport.SyntheticCorpusFixture;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.FileWriter;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/** Runs against the synthetic corpus of {@link SyntheticCorpusFixture}; the real corpus is never in the repository. */
 class ScenariosTestingRunnerTest {
+
+    @TempDir
+    Path corpusDir;
 
     private AppProperties properties;
     private ObjectMapper objectMapper;
@@ -32,8 +39,9 @@ class ScenariosTestingRunnerTest {
     private CorpusRagSeederService seederService;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws IOException {
         properties = new AppProperties();
+        properties.getDrafting().setGstCorpusDir(SyntheticCorpusFixture.create(corpusDir).toString());
         objectMapper = new ObjectMapper();
         corpusMatcherService = new GstCorpusMatcherService(properties, objectMapper);
         corpusMatcherService.init();
@@ -147,7 +155,11 @@ class ScenariosTestingRunnerTest {
 
     private void exportTestSummary(String filename, String scenarioTitle, GeneratedDraft draft) {
         try {
-            File out = new File("../" + filename);
+            // tracked output/ only for an E2E run; a plain mvn test writes to target/ (never modifies tracked files)
+            boolean e2e = "true".equalsIgnoreCase(System.getenv("ENABLE_E2E_TESTS"))
+                    || "true".equalsIgnoreCase(System.getProperty("ENABLE_E2E_TESTS"));
+            File out = e2e ? new File("../" + filename) : new File("target/test-" + filename);
+            out.getParentFile().mkdirs();
             try (FileWriter writer = new FileWriter(out)) {
                 writer.write("=================================================================\n");
                 writer.write(scenarioTitle + "\n");
