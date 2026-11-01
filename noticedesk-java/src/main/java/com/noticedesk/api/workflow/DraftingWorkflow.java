@@ -269,6 +269,31 @@ public class DraftingWorkflow {
         return p;
     }
 
+    private void cacheNovelDraft(DraftingInput input, GeneratedDraft generated) {
+        try {
+            String issue = input.notice().get("issue") != null ? input.notice().get("issue").toString() : "Novel Notice Allegation";
+            String title = "Reply for " + input.clientLegalName() + " - " + issue;
+            String fullContent = generated.sections().stream()
+                    .map(s -> s.title() + ": " + s.bodyHtml())
+                    .reduce("", (a, b) -> a + "\n" + b);
+            ragStoreService.cacheNovelDraft(issue, title, fullContent);
+        } catch (Exception e) {
+            log.warn("Failed to auto-cache novel draft into RAG: {}", e.getMessage());
+        }
+    }
+
+    private void savePartialMatchNewChunk(DraftingInput input, GeneratedDraft generated) {
+        try {
+            String issue = input.notice().get("issue") != null ? input.notice().get("issue").toString() : "Partial Match New Ground";
+            String newChunkContent = generated.sections().stream()
+                    .map(s -> s.title() + ": " + s.bodyHtml())
+                    .reduce("", (a, b) -> a + "\n" + b);
+            ragStoreService.saveNewChunk(issue, newChunkContent);
+        } catch (Exception e) {
+            log.warn("Failed to save partial match new chunk into RAG: {}", e.getMessage());
+        }
+    }
+
     /**
      * Resolve the citation provider name, defaulting to "stub" if not configured.
      * Reads from {@code CITATION_PROVIDER} env var as a secondary fallback.
