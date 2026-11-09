@@ -23,10 +23,10 @@ Litigation-first tax operating system for Indian CA firms. Sprint 1: foundation 
 
 There are **two backend implementations** with the same API contract — pick one:
 
-| | Python (`apps/api`) | Java (`noticedesk-java`) |
-|---|---|---|
-| Port | `8000` | `9090` |
-| Status | Original, feature-complete | Rewrite in progress |
+|            | Python (`apps/api`)            | Java (`noticedesk-java`)                                         |
+| ---------- | -------------------------------- | ------------------------------------------------------------------ |
+| Port       | `8000`                         | `9090`                                                           |
+| Status     | Original, feature-complete       | Rewrite in progress                                                |
 | Migrations | `packages/db/migrations/*.sql` | `noticedesk-java/src/main/resources/db/migration/*.sql` (Flyway) |
 
 The frontend defaults to the Java backend. To point it at Python instead, see [Running the frontend](#3-frontend-nextjs).
@@ -65,18 +65,23 @@ psql noticedesk_dev -c "GRANT ALL ON SCHEMA public TO noticedesk_app;"
 Apply migrations — **pick the path matching the backend you're running**:
 
 **Python backend** (uses `packages/db/migrations/`):
+
 ```bash
 make db-reset
 ```
+
 This wipes, re-applies all migrations, and loads the demo seed (`packages/db/seeds/phase1_demo.sql`) in one step.
 
 **Java backend** (Flyway migrations run automatically on startup — see step 2b). If you hit a broken migration state from a previous run, drop and recreate the DB first:
+
 ```bash
 psql postgres -c "DROP DATABASE IF EXISTS noticedesk_dev;"
 psql postgres -c "CREATE DATABASE noticedesk_dev;"
 psql noticedesk_dev -c "GRANT ALL ON SCHEMA public TO noticedesk_app;"
 ```
+
 Then load demo data manually after the app starts once (see `seed_demo.sql` at the repo root, or `packages/db/seeds/phase1_demo.sql` — both work against either backend's schema):
+
 ```bash
 psql noticedesk_dev -f seed_demo.sql
 ```
@@ -90,11 +95,14 @@ cd apps/api
 uv sync
 cp .env.example .env   # defaults work out of the box for local dev
 uv run uvicorn app.main:app --reload --port 8000
+
+.\apps\api\.venv\Scripts\uvicorn.exe app.main:app --reload --port 8000 --app-dir apps\apib
 ```
 
 Health check: `GET http://localhost:8000/v1/health`
 
 Key `.env` defaults (already stub-mode, no API keys required to run):
+
 - `LLM_PROVIDER_PRIMARY=stub` — set to `anthropic` + `ANTHROPIC_API_KEY=sk-ant-...` for real draft generation
 - `OCR_PROVIDER_PRIMARY=stub` — set to `google_doc_ai` or `azure_doc_intel` for real OCR
 - `CITATION_PROVIDER=stub` — set to `indiankanoon` + `INDIANKANOON_API_TOKEN=...` for real citation verification
@@ -109,6 +117,7 @@ Key `.env` defaults (already stub-mode, no API keys required to run):
 - `AUTH_PROVIDER=dev` — dev header bypass, only works when `ENVIRONMENT=development`
 
 Run tests:
+
 ```bash
 cd apps/api && pytest
 ```
@@ -128,6 +137,7 @@ Flyway applies all migrations automatically on startup. Health check: `GET http:
 Config is in `noticedesk-java/src/main/resources/application.yml` (same env var names as the Python `.env.example` above where applicable — `DATABASE_URL`, `ANTHROPIC_API_KEY`, etc.)
 
 v7 drafting (Java only):
+
 - `HIGH_STAKES_SECTION_74=false` / `HIGH_STAKES_APPEAL_STAGE=false` / `HIGH_STAKES_DEMAND_THRESHOLD=` — high-stakes
   drafting mode is off by default; set to `true` / an amount to route Section 74/74A, appeal-stage or large-demand
   notices to the high-stakes writer. Off, every notice uses the normal path (code template fill, partial writer,
@@ -135,6 +145,7 @@ v7 drafting (Java only):
 
 PDF runner privacy path (`V7PdfPipelineRunnerTest`; details in [`docs/PRIVATE_DATA.md`](docs/PRIVATE_DATA.md), the
 copy-paste laptop block in [`docs/PRODUCTION-CONFIG.md`](docs/PRODUCTION-CONFIG.md#2b-pdf-runner-on-a-laptop--local-text-anonymisation-restored-draft)):
+
 - `OCR_PROVIDER=local` (default) — the PDF text layer through PDFBox; a scanned PDF through the system `tesseract`
   command (`apt install tesseract-ocr tesseract-ocr-eng`), refused with a clear message when it is not installed.
   Nothing is sent to any model. `gemini` (the free-tier key) is refused unless `NOTICE_ANONYMISE=off`.
@@ -170,6 +181,7 @@ npm run dev
 Open **http://localhost:3000**
 
 By default the frontend proxies to the **Java backend on port 9090** (`NEXT_PUBLIC_API_BASE_URL` in `.env.local`). To point it at the **Python backend** instead, edit `apps/web/.env.local`:
+
 ```
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
@@ -179,6 +191,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 Go to **http://localhost:3000/login** and enter any tenant/user UUIDs — this drops an httpOnly session cookie that the frontend forwards as `X-Dev-User-Id` / `X-Dev-Tenant-Id` headers on every API call.
 
 If you loaded the demo seed, use the seed's fixed IDs:
+
 - **Tenant ID:** `11111111-1111-1111-1111-111111111111`
 - **User ID:** `22222222-2222-2222-2222-222222222222`
 

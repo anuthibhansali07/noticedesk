@@ -47,8 +47,11 @@ export function MatterHeader({ data, onTransition }: Props) {
         : "—";
 
   return (
-    <header className="relative mb-5 overflow-hidden rounded-md border border-slate-line bg-white px-7 py-6">
-      <div className="absolute inset-x-0 top-0 h-[3px] bg-gold" />
+    <header className="relative mb-5 rounded-md border border-slate-line bg-white px-7 py-6">
+      {/* No overflow-hidden on the header: it clipped the lifecycle "Move to"
+          popover at the header's bottom edge. The gold bar rounds its own top
+          corners to match the card instead. */}
+      <div className="absolute inset-x-0 top-0 h-[3px] rounded-t-md bg-gold" />
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0">
           <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-gold-dark">

@@ -6,7 +6,7 @@
 -- set inside the file so RLS doesn't block the inserts.
 
 BEGIN;
-SELECT set_config('app.current_tenant', '11111111-1111-1111-1111-111111111111', true);
+SELECT set_config('app.current_tenant', '11111111-1111-1111-1111-111111111111', false);
 
 -- ---- Tenant + user --------------------------------------------------------
 INSERT INTO tenants (tenant_id, legal_name, slug) VALUES ('11111111-1111-1111-1111-111111111111', 'Mehta & Associates', 'mehta-associates') ON CONFLICT (tenant_id) DO UPDATE SET legal_name = EXCLUDED.legal_name;

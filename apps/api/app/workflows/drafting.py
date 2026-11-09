@@ -28,6 +28,7 @@ from app.agents.citation_verification import (
     verify_citations,
 )
 from app.agents.drafting import GeneratedDraft, generate_draft, load_drafting_input
+from app.agents.regime_guidance import FormatProfile, regime_for_law
 from app.core.db import session_for_tenant
 from app.core.logging import get_logger
 from app.services import audit
@@ -46,6 +47,7 @@ class GenerateDraftJob:
     tone: Tone
     partner_instructions: str
     include_cross_registration: bool = False
+    format_profile: FormatProfile = "full_submission"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +56,37 @@ class GenerateDraftResult:
     version: int
     sections_kept: int
     citation_summary: dict[str, int]
+
+
+DRAFTS_OPTIONAL_COLUMNS: tuple[str, ...] = ("notice_id", "format_profile")
+_drafts_optional_columns_cache: tuple[str, ...] | None = None
+
+
+async def drafts_optional_columns(session: Any) -> tuple[str, ...]:
+    """Which of :data:`DRAFTS_OPTIONAL_COLUMNS` exist on ``drafts``.
+
+    Lets the API keep working against a DB that predates migration 0023.
+    Only a complete result is cached, so applying the migration takes
+    effect without a restart.
+    """
+    global _drafts_optional_columns_cache
+    if _drafts_optional_columns_cache is not None:
+        return _drafts_optional_columns_cache
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'drafts' AND column_name = ANY(:cols)
+                """
+            ),
+            {"cols": list(DRAFTS_OPTIONAL_COLUMNS)},
+        )
+    ).all()
+    present = tuple(c for c in DRAFTS_OPTIONAL_COLUMNS if c in {r[0] for r in rows})
+    if len(present) == len(DRAFTS_OPTIONAL_COLUMNS):
+        _drafts_optional_columns_cache = present
+    return present
 
 
 async def run_generate_draft(job: GenerateDraftJob) -> GenerateDraftResult:
@@ -73,6 +106,7 @@ async def run_generate_draft(job: GenerateDraftJob) -> GenerateDraftResult:
             tone=job.tone,
             partner_instructions=job.partner_instructions,
             include_cross_registration=job.include_cross_registration,
+            format_profile=job.format_profile,
         )
 
         # 2. Generate the draft via the configured LLM.
@@ -85,7 +119,9 @@ async def run_generate_draft(job: GenerateDraftJob) -> GenerateDraftResult:
 
         # 3. Verify citations.
         extracted = extract_citations(sections_as_dicts)
-        verified = await verify_citations(session, extracted)
+        verified = await verify_citations(
+            session, extracted, regime=regime_for_law(di.law)
+        )
 
         # 4. Strip UNVERIFIED citations and append footnote.
         stripped_sections, footnote_lines = apply_stripped_citations(
@@ -121,15 +157,21 @@ async def run_generate_draft(job: GenerateDraftJob) -> GenerateDraftResult:
 
         # 8. Persist the draft row.
         draft_id: UUID = uuid4()
+        # notice_id ties the draft to the notice it answers (the DOCX cover
+        # sheet reads it); format_profile drives the version badge. Both
+        # arrive in migration 0023 — skip them if it hasn't been applied.
+        extra_cols = await drafts_optional_columns(session)
+        extra_names = "".join(f", {c}" for c in extra_cols)
+        extra_values = "".join(f", :{c}" for c in extra_cols)
         await session.execute(
             text(
-                """
+                f"""
                 INSERT INTO drafts (
                     draft_id, tenant_id, matter_id, version, status,
                     model_used, prompt_version, tone,
                     sections, citation_summary, paragraph_to_source_map,
                     internal_partner_note, content, generated_at,
-                    generated_by_user_id
+                    generated_by_user_id{extra_names}
                 ) VALUES (
                     :did, :tid, :mid, :ver, 'draft',
                     :model, :pv, :tone,
@@ -137,11 +179,13 @@ async def run_generate_draft(job: GenerateDraftJob) -> GenerateDraftResult:
                     CAST(:csum AS JSONB),
                     CAST(:pmap AS JSONB),
                     :ipn, CAST(:sections AS JSONB), NOW(),
-                    :uid
+                    :uid{extra_values}
                 )
                 """
             ),
             {
+                "notice_id": str(job.notice_id),
+                "format_profile": job.format_profile,
                 "did": str(draft_id),
                 "tid": str(job.tenant_id),
                 "mid": str(job.matter_id),

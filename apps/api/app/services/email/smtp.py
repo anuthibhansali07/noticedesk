@@ -17,7 +17,6 @@ from app.services.email.base import (
     EmailTransientError,
 )
 
-
 _DEFAULT_TIMEOUT_SECONDS: Final[float] = 30.0
 
 

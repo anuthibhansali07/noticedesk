@@ -61,6 +61,10 @@ export async function proxyToApi(
   // file download in the browser instead of rendering as bytes.
   const cd = upstream.headers.get("content-disposition");
   if (cd) responseHeaders["content-disposition"] = cd;
+  // Rate-limited AI calls (HTTP 429) advertise how long to wait; the UI
+  // uses it for its retry countdown.
+  const retryAfter = upstream.headers.get("retry-after");
+  if (retryAfter) responseHeaders["retry-after"] = retryAfter;
   return new NextResponse(responseBody, {
     status: upstream.status,
     headers: responseHeaders,

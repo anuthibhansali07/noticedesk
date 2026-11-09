@@ -17,9 +17,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, status
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
-from app.agents.notice_routing import route_notice
-from app.core.errors import NotFoundError, PanGstinReconciliationError, ValidationError
+from app.agents.notice_routing import _coerce_date, route_notice
+from app.core.errors import (
+    AppError,
+    NotFoundError,
+    PanGstinReconciliationError,
+    ValidationError,
+)
 from app.middleware.tenant_context import CurrentContext
 from app.models.routing import (
     AddClientRequest,
@@ -169,22 +175,48 @@ async def reject_inbox(
     inbox = await _fetch_inbox(ctx.session, inbox_id)
     if inbox is None:
         raise NotFoundError("inbox row not found")
+    if inbox["routing_status"] == "routed":
+        raise ValidationError(
+            "this document is already routed to a matter and cannot be rejected"
+        )
 
-    await ctx.session.execute(
-        text(
-            """
-            UPDATE documents_inbox
-            SET routing_status            = 'manual_assignment',
-                parse_status              = 'completed',
-                routing_anomaly_details   = CAST(:details AS JSONB)
-            WHERE inbox_id = :id
-            """
-        ),
-        {
-            "id": str(inbox_id),
-            "details": json.dumps({"rejected": True, "reason": body.reason}),
-        },
-    )
+    # Earlier code set routing_status back to 'manual_assignment' — the status
+    # an unroutable row already has — so the inbox row looked unchanged after
+    # Reject. 'rejected' arrives in migration 0024. The previous anomaly
+    # details are kept (merged) so the reason it could not be routed survives.
+    try:
+        await ctx.session.execute(
+            text(
+                """
+                UPDATE documents_inbox
+                SET routing_status          = 'rejected',
+                    parse_status            = 'completed',
+                    routing_anomaly_details = COALESCE(routing_anomaly_details, '{}'::JSONB)
+                                              || CAST(:details AS JSONB),
+                    updated_at              = NOW()
+                WHERE inbox_id = :id
+                """
+            ),
+            {
+                "id": str(inbox_id),
+                "details": json.dumps(
+                    {
+                        "rejected": True,
+                        "reason": body.reason,
+                        "rejected_by_user_id": str(ctx.claims.user_id),
+                        "previous_routing_status": inbox["routing_status"],
+                    }
+                ),
+            },
+        )
+    except IntegrityError as e:
+        await ctx.session.rollback()
+        if "routing_status_check" in str(e):
+            raise AppError(
+                "Rejecting needs database migration "
+                "0024_inbox_rejected_status.sql, which has not been applied."
+            ) from e
+        raise
     await audit.emit(
         ctx.session,
         tenant_id=ctx.claims.tenant_id,
@@ -524,6 +556,10 @@ async def _create_notice_override(
     reconciliation_status,
 ) -> UUID:
     parsed = parsed or {}
+    # asyncpg needs datetime.date for the CAST(... AS DATE) params; ISO
+    # strings straight from the parser failed with DataError ("'str' object
+    # has no attribute 'toordinal'") and the Assign manually dialog showed
+    # "database error".
     inserted = (
         await session.execute(
             text(
@@ -560,15 +596,15 @@ async def _create_notice_override(
                 "doc_type": parsed.get("document_type"),
                 "notice_number": parsed.get("notice_number"),
                 "din": parsed.get("din_or_rfn"),
-                "issue_date": parsed.get("issue_date"),
-                "receipt_date": parsed.get("receipt_date"),
-                "due_date": parsed.get("due_date"),
+                "issue_date": _coerce_date(parsed.get("issue_date")),
+                "receipt_date": _coerce_date(parsed.get("receipt_date")),
+                "due_date": _coerce_date(parsed.get("due_date")),
                 "authority": parsed.get("authority"),
                 "fy": parsed.get("financial_year"),
                 "ay": parsed.get("assessment_year"),
                 "issues": json.dumps(parsed.get("issues") or []),
                 "docs": json.dumps(parsed.get("documents_required") or []),
-                "hearing_date": parsed.get("hearing_date"),
+                "hearing_date": _coerce_date(parsed.get("hearing_date")),
                 "demand_amount": parsed.get("demand_amount"),
                 "ingest_channel": ingest_channel,
                 "inbox_id": str(source_inbox_id),

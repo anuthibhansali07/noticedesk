@@ -30,6 +30,7 @@ def _build_anthropic(model: str) -> LLMProvider:
         model=model,
         workspace_id=s.anthropic_workspace_id,
         timeout_seconds=s.anthropic_timeout_seconds,
+        rate_limit_retry_delays=s.rate_limit_retry_delays,
     )
 
 
@@ -42,6 +43,8 @@ def _build_openai(model: str) -> LLMProvider:
         model=model,
         timeout_seconds=s.openai_timeout_seconds,
         base_url=s.openai_base_url or None,
+        rate_limit_retry_delays=s.rate_limit_retry_delays,
+        fallback_models=s.openai_fallback_model_list,
     )
 
 

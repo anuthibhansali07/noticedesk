@@ -152,9 +152,22 @@ async def list_inbox(ctx: CurrentContext, limit: int = 50, offset: int = 0) -> I
             {"limit": limit, "offset": offset},
         )
     ).all()
-    total_row = (
-        await ctx.session.execute(text("SELECT COUNT(*) FROM documents_inbox"))
-    ).scalar_one()
+    # "Awaiting review" used to be COUNT(*) of every row, so rejected and
+    # already-routed documents inflated the inbox heading and sidebar badge.
+    counts = (
+        await ctx.session.execute(
+            text(
+                """
+                SELECT COUNT(*),
+                       COUNT(*) FILTER (
+                           WHERE routing_status NOT IN ('routed', 'rejected')
+                       )
+                FROM documents_inbox
+                """
+            )
+        )
+    ).one()
+    total_row, awaiting_row = counts[0], counts[1]
     items = [
         InboxItem(
             inbox_id=r[0],
@@ -178,7 +191,7 @@ async def list_inbox(ctx: CurrentContext, limit: int = 50, offset: int = 0) -> I
         )
         for r in rows
     ]
-    return InboxList(items=items, total=int(total_row))
+    return InboxList(items=items, total=int(total_row), awaiting_review=int(awaiting_row))
 
 
 @router.get("/documents/inbox/{inbox_id}/ocr", response_model=OcrTextResponse)
@@ -205,6 +218,49 @@ async def get_ocr_text(ctx: CurrentContext, inbox_id: UUID) -> OcrTextResponse:
         page_count=row[3],
         ocr_error=row[4],
     )
+
+
+@router.post("/documents/inbox/{inbox_id}/retry-ocr")
+async def retry_ocr(ctx: CurrentContext, inbox_id: UUID) -> dict[str, str]:
+    """Re-run OCR (then parse + route) on a document whose OCR failed.
+
+    A failed row used to be a dead end: the provider is often only briefly
+    unavailable (Gemini 503 "high demand"), but the partner had to upload
+    the file again to get another attempt.
+    """
+    row = (
+        await ctx.session.execute(
+            text("SELECT ocr_status FROM documents_inbox WHERE inbox_id = :id"),
+            {"id": str(inbox_id)},
+        )
+    ).first()
+    if row is None:
+        raise NotFoundError("document not found")
+    if row[0] != "failed":
+        raise ValidationError(f"OCR can only be retried after it failed (status: {row[0]})")
+
+    await ctx.session.execute(
+        text(
+            """
+            UPDATE documents_inbox
+            SET ocr_status = 'pending', ocr_error = NULL
+            WHERE inbox_id = :id
+            """
+        ),
+        {"id": str(inbox_id)},
+    )
+    await audit.emit(
+        ctx.session,
+        tenant_id=ctx.claims.tenant_id,
+        user_id=ctx.claims.user_id,
+        action_type="ocr.retried",
+        entity_type="documents_inbox",
+        entity_id=inbox_id,
+        after_state={"ocr_status": "pending"},
+    )
+    await ctx.session.commit()
+    await get_dispatcher().submit_ocr(inbox_id, UUID(ctx.claims.tenant_id))
+    return {"inbox_id": str(inbox_id), "ocr_status": "pending"}
 
 
 def _safe_filename(filename: str) -> str:

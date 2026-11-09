@@ -1,13 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { CompareVersionsModal } from "@/components/drafts/compare-versions-modal";
 import { DraftEmptyState } from "@/components/drafts/draft-empty-state";
+import { type DraftOptions } from "@/components/drafts/draft-options";
 import { DraftPane } from "@/components/drafts/draft-pane";
 import { DraftProgressCard } from "@/components/drafts/draft-progress-card";
 import { DraftToolbar } from "@/components/drafts/draft-toolbar";
+import { RegenerateDialog } from "@/components/drafts/regenerate-dialog";
 import { VerificationPanel } from "@/components/drafts/verification-panel";
+import { RateLimitNotice } from "@/components/ui/rate-limit-notice";
 import { useToast } from "@/components/ui/toast";
 import {
   fetchDraft,
@@ -16,8 +19,10 @@ import {
   generateDraft,
   type DraftDetail,
   type DraftSummary,
+  type DraftTone,
   type TriagePayload,
 } from "@/lib/api";
+import { isRateLimited, useRateLimitRetry } from "@/lib/hooks/use-rate-limit-retry";
 
 interface Props {
   noticeId: string;
@@ -33,6 +38,8 @@ export function DraftTab({ noticeId, matterId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
   const [triage, setTriage] = useState<TriagePayload | null>(null);
+  const [regenOpen, setRegenOpen] = useState(false);
+  const rateLimit = useRateLimitRetry();
 
   const loadVersions = useCallback(async (): Promise<DraftSummary[]> => {
     const res = await fetchDraftVersions(matterId);
@@ -69,18 +76,16 @@ export function DraftTab({ noticeId, matterId }: Props) {
     };
   }, [loadVersions, loadDraft, noticeId]);
 
-  async function handleGenerate(
-    tone: "formal" | "assertive" | "conciliatory",
-    instructions: string,
-    includeCross: boolean,
-  ) {
+  async function handleGenerate(opts: DraftOptions, attempt = 0) {
+    rateLimit.cancel();
     setBusy(true);
     setError(null);
     try {
       const res = await generateDraft(noticeId, {
-        tone,
-        partner_instructions: instructions,
-        include_cross_registration: includeCross,
+        tone: opts.tone,
+        partner_instructions: opts.instructions,
+        include_cross_registration: opts.includeCross,
+        format_profile: opts.formatProfile,
       });
       const list = await loadVersions();
       await loadDraft(res.draft_id);
@@ -90,11 +95,40 @@ export function DraftTab({ noticeId, matterId }: Props) {
       );
       void list;
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "draft failed");
+      if (isRateLimited(e) && attempt === 0) {
+        // Provider throttled us: count down and retry once automatically.
+        rateLimit.schedule(e.retryAfterSeconds, () => void handleGenerate(opts, attempt + 1));
+      } else {
+        setError(e instanceof Error ? e.message : "draft failed");
+      }
     } finally {
       setBusy(false);
     }
   }
+
+  // Seed the regenerate dialog with the current version's settings.
+  const regenInitial = useMemo<DraftOptions>(
+    () => ({
+      tone: ((draft?.tone as DraftTone) || "formal"),
+      formatProfile: draft?.format_profile ?? "full_submission",
+      instructions: "",
+      includeCross: false,
+    }),
+    [draft?.tone, draft?.format_profile],
+  );
+
+  const rateLimitNotice =
+    rateLimit.countdown !== null ? (
+      <RateLimitNotice
+        countdown={rateLimit.countdown}
+        what="draft"
+        onRetryNow={rateLimit.retryNow}
+        onCancel={() => {
+          rateLimit.cancel();
+          setError("Draft generation cancelled after the AI provider rate limit. Try again when ready.");
+        }}
+      />
+    ) : null;
 
   function handleExport(mode: "filing" | "client" | "internal") {
     if (!draft) return;
@@ -112,7 +146,12 @@ export function DraftTab({ noticeId, matterId }: Props) {
     return (
       <div className="space-y-4">
         {triageBanner}
-        <DraftEmptyState busy={busy} error={error} onGenerate={handleGenerate} />
+        <DraftEmptyState
+          busy={busy}
+          error={error}
+          onGenerate={(opts) => handleGenerate(opts)}
+          notice={rateLimitNotice}
+        />
       </div>
     );
   }
@@ -126,19 +165,11 @@ export function DraftTab({ noticeId, matterId }: Props) {
         versions={versions}
         onPickVersion={(id) => void loadDraft(id)}
         onCompare={() => setCompareOpen(true)}
-        onRegenerate={() => {
-          // Reuse the same handler as first-generation; the toolbar is
-          // disabled while busy and the body below swaps to the progress
-          // card so partners see the same multi-step status as a first run.
-          void handleGenerate(
-            (draft.tone as "formal" | "assertive" | "conciliatory") || "formal",
-            "",
-            false,
-          );
-        }}
+        onRegenerate={() => setRegenOpen(true)}
         onExport={handleExport}
-        busy={busy}
+        busy={busy || rateLimit.countdown !== null}
       />
+      {rateLimitNotice ? <div className="mx-6 mt-4">{rateLimitNotice}</div> : null}
       {busy ? (
         // Regenerate path: swap the split-pane for the same progress card
         // the first-generation flow shows. Title makes it clear the
@@ -173,6 +204,19 @@ export function DraftTab({ noticeId, matterId }: Props) {
           {error}
         </p>
       ) : null}
+
+      <RegenerateDialog
+        open={regenOpen}
+        currentVersion={versions[0]?.version ?? draft.version}
+        initial={regenInitial}
+        onClose={() => setRegenOpen(false)}
+        onSubmit={(opts) => {
+          // Same handler as first-generation; the body swaps to the
+          // progress card while it runs.
+          setRegenOpen(false);
+          void handleGenerate(opts);
+        }}
+      />
 
       <CompareVersionsModal
         open={compareOpen}

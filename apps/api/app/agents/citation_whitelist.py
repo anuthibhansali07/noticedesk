@@ -28,6 +28,14 @@ universe of likely citation text.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+from urllib.parse import quote_plus
+
+# Which tax regime an authority belongs to. "INDIRECT" covers Central
+# Excise / Customs / Service Tax / VAT / GST; "DIRECT" is the Income-tax
+# Act; "ANY" marks regime-neutral principles (natural justice) that may be
+# cited in either kind of reply.
+Regime = Literal["INDIRECT", "DIRECT", "ANY"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +43,12 @@ class CanonicalCase:
     name: str
     canonical_url: str
     proposition: str  # short note on what the case stands for
+    regime: Regime = "INDIRECT"
+
+
+def _ik_search(name: str) -> str:
+    """IndianKanoon search URL for entries whose doc id we haven't pinned."""
+    return f"https://indiankanoon.org/search/?formInput={quote_plus(name)}"
 
 
 # Substring (lowercased) → CanonicalCase. Substring match because the model
@@ -82,6 +96,7 @@ CANONICAL_CASES: dict[str, CanonicalCase] = {
             "Denial of cross-examination of witnesses whose statements are "
             "relied upon vitiates the adjudication order."
         ),
+        regime="ANY",
     ),
     # ---- ITC mismatch / supplier default ---------------------------------
     "suncraft energy": CanonicalCase(
@@ -112,15 +127,12 @@ CANONICAL_CASES: dict[str, CanonicalCase] = {
         ),
     ),
     # ---- ITC entitlement principle ---------------------------------------
-    "bharti airtel": CanonicalCase(
-        name="Commissioner of GST v. Bharti Airtel Ltd",
-        canonical_url="https://indiankanoon.org/doc/170611621/",
-        proposition=(
-            "The Department bears the burden of establishing a demand on "
-            "positive material; mere book entries or system mismatches do "
-            "not discharge that burden (SC, 2021)."
-        ),
-    ),
+    # Bharti Airtel deliberately absent: the entry named it "Commissioner of
+    # GST v. Bharti Airtel" for a burden-of-proof proposition. The SC case is
+    # Union of India v. Bharti Airtel (2021), decided for the Revenue
+    # (GSTR-3B self-assessment, GSTR-2A only a facilitator) — not a case to
+    # offer the drafter for the taxpayer. Without an entry it goes to the
+    # normal IndianKanoon check like any other citation.
     "eicher motors": CanonicalCase(
         name="Eicher Motors Ltd v. Union of India",
         canonical_url="https://indiankanoon.org/doc/1486002/",
@@ -165,6 +177,7 @@ CANONICAL_CASES: dict[str, CanonicalCase] = {
             "rational connection with the material on record; suspicion is "
             "not enough (SC)."
         ),
+        regime="DIRECT",
     ),
     "kelvinator": CanonicalCase(
         name="CIT v. Kelvinator of India Ltd",
@@ -173,6 +186,7 @@ CANONICAL_CASES: dict[str, CanonicalCase] = {
             "Reassessment under s.148 cannot be based on a mere change of "
             "opinion; tangible material is required (SC, 2010)."
         ),
+        regime="DIRECT",
     ),
     "ashish agarwal": CanonicalCase(
         name="Union of India v. Ashish Agarwal",
@@ -181,8 +195,56 @@ CANONICAL_CASES: dict[str, CanonicalCase] = {
             "Section 148A(b) procedure must be followed for reassessment "
             "notices issued under the new regime (SC, 2022)."
         ),
+        regime="DIRECT",
+    ),
+    # ---- Direct tax: depreciation (s.32) ----------------------------------
+    "whittle anderson": CanonicalCase(
+        name="CIT v. Whittle Anderson Ltd",
+        canonical_url=_ik_search("Whittle Anderson"),
+        proposition=(
+            "An asset is 'used' for s.32 depreciation once it is ready for "
+            "use in the business, even if not actually operated in the "
+            "year — (1971) 79 ITR 613 (Bom)."
+        ),
+        regime="DIRECT",
+    ),
+    "shaan finance": CanonicalCase(
+        name="CIT v. Shaan Finance (P) Ltd",
+        canonical_url=_ik_search("Shaan Finance"),
+        proposition=(
+            "Depreciation is allowable where the asset is used for the "
+            "purpose of the assessee's business, including commercial "
+            "exploitation by leasing — (1998) 231 ITR 308 (SC)."
+        ),
+        regime="DIRECT",
+    ),
+    "mysore minerals": CanonicalCase(
+        name="Mysore Minerals Ltd v. CIT",
+        canonical_url=_ik_search("Mysore Minerals"),
+        proposition=(
+            "'Owned' in s.32 includes beneficial ownership; an assessee in "
+            "possession and use as owner is entitled to depreciation even "
+            "without a registered title — (1999) 239 ITR 775 (SC)."
+        ),
+        regime="DIRECT",
+    ),
+    # ---- Direct tax: natural justice -------------------------------------
+    "kishinchand chellaram": CanonicalCase(
+        name="Kishinchand Chellaram v. CIT",
+        canonical_url=_ik_search("Kishinchand Chellaram"),
+        proposition=(
+            "Material relied upon against the assessee must be disclosed "
+            "and the assessee given an opportunity to rebut it — (1980) "
+            "125 ITR 713 (SC)."
+        ),
+        regime="DIRECT",
     ),
 }
+
+
+def cases_for_regime(regime: Regime) -> list[CanonicalCase]:
+    """Whitelist entries citable in a reply under ``regime`` (incl. ANY)."""
+    return [c for c in CANONICAL_CASES.values() if c.regime in (regime, "ANY")]
 
 
 def lookup_canonical(case_name: str) -> CanonicalCase | None:

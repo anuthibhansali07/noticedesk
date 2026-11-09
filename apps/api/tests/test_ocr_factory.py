@@ -15,7 +15,7 @@ from app.services.ocr.stub import StubOCRProvider
 
 
 def test_known_providers() -> None:
-    assert KNOWN_PROVIDERS == frozenset({"google_doc_ai", "azure_doc_intel", "stub"})
+    assert KNOWN_PROVIDERS == frozenset({"google_doc_ai", "azure_doc_intel", "gemini", "stub"})
 
 
 def test_stub_factory_returns_stub() -> None:

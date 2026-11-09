@@ -11,7 +11,7 @@ workflow itself. The triage stays usable; the partner sees a banner.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -196,7 +196,7 @@ def _build_variables(
         "summary": (ctx.get("summary") or "").strip() or "(triage summary not available)",
         "checklist_html": _checklist_html(checklist_rows),
         "checklist_text": _checklist_text(checklist_rows),
-        "sent_at": datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC"),
+        "sent_at": datetime.now(UTC).strftime("%d %b %Y, %H:%M UTC"),
     }
 
 

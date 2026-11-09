@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from typing import Any
 
 from app.services.llm.base import (
     LLMError,
     LLMProvider,
+    LLMRateLimitError,
     LLMResponse,
     LLMTransientError,
+    is_rate_limit_exception,
+    retry_after_from_exception,
+    retry_on_rate_limit,
 )
 
 
@@ -30,12 +35,14 @@ class AnthropicProvider(LLMProvider):
         workspace_id: str | None = None,
         client: Any | None = None,
         timeout_seconds: float = 180.0,
+        rate_limit_retry_delays: Sequence[float] = (2.0, 5.0),
     ) -> None:
         self._api_key = api_key
         self._workspace_id = workspace_id
         self.model = model
         self._client = client
         self._timeout = timeout_seconds
+        self._retry_delays = tuple(rate_limit_retry_delays)
 
     def _ensure_client(self) -> Any:
         if self._client is not None:
@@ -46,11 +53,11 @@ class AnthropicProvider(LLMProvider):
             raise LLMError(
                 "anthropic SDK not installed; install it or pick a different provider"
             ) from e
-        
+
         kwargs = {"api_key": self._api_key}
         if self._workspace_id:
             kwargs["default_headers"] = {"anthropic-workspace-id": self._workspace_id}
-            
+
         self._client = AsyncAnthropic(**kwargs)
         return self._client
 
@@ -91,6 +98,11 @@ class AnthropicProvider(LLMProvider):
                 # Anthropic exceptions are mostly transient (rate limit, 5xx,
                 # overloaded). Treat as transient by default so the workflow's
                 # retry layer gets a chance.
+                if is_rate_limit_exception(e):
+                    raise LLMRateLimitError(
+                        f"anthropic rate limited: {e}",
+                        retry_after_seconds=retry_after_from_exception(e),
+                    ) from e
                 raise LLMTransientError(f"anthropic call failed: {e}") from e
 
             text_chunks = [
@@ -107,10 +119,17 @@ class AnthropicProvider(LLMProvider):
                 raw={"id": getattr(msg, "id", None)},
             )
 
-        try:
-            return await asyncio.wait_for(_call(), timeout=self._timeout)
-        except TimeoutError as e:
-            raise LLMTransientError(f"anthropic timed out after {self._timeout}s") from e
+        async def _timed() -> LLMResponse:
+            try:
+                return await asyncio.wait_for(_call(), timeout=self._timeout)
+            except TimeoutError as e:
+                raise LLMTransientError(
+                    f"anthropic timed out after {self._timeout}s"
+                ) from e
+
+        return await retry_on_rate_limit(
+            _timed, delays=self._retry_delays, label=f"anthropic:{self.model}"
+        )
 
 
 def _model_deprecates_temperature(model: str) -> bool:

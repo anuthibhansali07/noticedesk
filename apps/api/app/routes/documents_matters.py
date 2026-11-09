@@ -20,7 +20,7 @@ import hashlib
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -304,3 +304,97 @@ async def update_document(
     )
     await ctx.session.commit()
     return {"document_id": str(document_id), "updated_fields": list(fields)}
+
+
+# ---------------------------------------------------------------------------
+# Preview: metadata + extracted text, and the raw file
+# ---------------------------------------------------------------------------
+
+# Mime types the browser can render inline in the preview drawer. Anything
+# else (docx / xlsx) is served as an attachment download.
+_INLINE_PREVIEW_MIME = frozenset(
+    {"application/pdf", "image/jpeg", "image/png", "text/plain", "text/csv"}
+)
+# Characters of OCR / extracted text returned for the "Extracted text" tab.
+_PREVIEW_TEXT_CHARS = 20_000
+
+
+@router.get("/documents/{document_id}")
+async def get_document(ctx: CurrentContext, document_id: UUID) -> dict[str, Any]:
+    """Metadata + extracted-text excerpt for the checklist preview drawer."""
+    row = (
+        await ctx.session.execute(
+            text(
+                """
+                SELECT d.document_id, d.matter_id, d.filename, d.document_type,
+                       d.mime_type, d.size_bytes, d.lifecycle_stage,
+                       d.uploaded_at, d.file_hash,
+                       LEFT(COALESCE(d.extracted_text, ''), :chars) AS extracted_text,
+                       LENGTH(COALESCE(d.extracted_text, '')) AS extracted_text_length,
+                       u.name AS uploaded_by_name
+                FROM documents d
+                LEFT JOIN users u ON u.user_id = d.uploaded_by_user_id
+                WHERE d.document_id = :did
+                """
+            ),
+            {"did": str(document_id), "chars": _PREVIEW_TEXT_CHARS},
+        )
+    ).mappings().first()
+    if row is None:
+        raise NotFoundError("document not found")
+    mime = (row["mime_type"] or "").lower()
+    return {
+        "document_id": str(row["document_id"]),
+        "matter_id": str(row["matter_id"]) if row["matter_id"] else None,
+        "filename": row["filename"],
+        "document_type": row["document_type"],
+        "mime_type": row["mime_type"],
+        "size_bytes": row["size_bytes"],
+        "lifecycle_stage": row["lifecycle_stage"],
+        "uploaded_at": row["uploaded_at"].isoformat() if row["uploaded_at"] else None,
+        "uploaded_by_name": row["uploaded_by_name"],
+        "file_hash": row["file_hash"],
+        "previewable": mime in _INLINE_PREVIEW_MIME,
+        "extracted_text": row["extracted_text"] or None,
+        "extracted_text_truncated": (row["extracted_text_length"] or 0) > _PREVIEW_TEXT_CHARS,
+    }
+
+
+@router.get("/documents/{document_id}/file")
+async def get_document_file(
+    ctx: CurrentContext, document_id: UUID, download: bool = False
+) -> Response:
+    """Stream the stored file. ``inline`` for previewable types unless
+    ``?download=1``; tenant scoping comes from RLS on the documents row."""
+    row = (
+        await ctx.session.execute(
+            text(
+                "SELECT filename, mime_type, s3_key FROM documents "
+                "WHERE document_id = :did"
+            ),
+            {"did": str(document_id)},
+        )
+    ).mappings().first()
+    if row is None or not row["s3_key"]:
+        raise NotFoundError("document not found")
+
+    try:
+        payload = await get_storage().get(row["s3_key"])
+    except Exception as e:  # noqa: BLE001 — storage backends raise varied errors
+        logger.warning("document_file_missing", document_id=str(document_id), error=str(e))
+        raise NotFoundError("stored file not found for this document") from e
+
+    mime = (row["mime_type"] or "application/octet-stream").lower()
+    disposition = (
+        "inline" if (mime in _INLINE_PREVIEW_MIME and not download) else "attachment"
+    )
+    filename = _safe_filename(row["filename"] or "document")
+    return Response(
+        content=payload,
+        media_type=mime,
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )

@@ -85,7 +85,10 @@ private/
 *.real.pdf
 noticedesk-private/
 
-
+# docs artifacts & generator scripts
+docs/*.docx
+docs/*.doc
+docs/generate_*.py
 
 # Private / real client data: never committed (see docs/PRIVATE_DATA.md)
 private/
@@ -94,3 +97,10 @@ noticedesk-private/
 *.real.sql
 *.real.docx
 *.real.pdf
+ 
+# Test suggestions and audit reports
+test suggestion/
+test_suggestion/
+
+test_docs/
+test docs/

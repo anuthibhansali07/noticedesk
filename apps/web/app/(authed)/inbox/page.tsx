@@ -16,7 +16,8 @@ export default function InboxPage() {
   const [viewing, setViewing] = useState<InboxItem | null>(null);
 
   const items = data?.items ?? [];
-  const total = data?.total ?? 0;
+  // Rejected and already-routed rows are listed but not "awaiting review".
+  const total = data?.awaiting_review ?? 0;
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6">

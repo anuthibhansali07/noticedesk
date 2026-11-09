@@ -41,7 +41,7 @@ export default function DashboardPage() {
       ]);
       setCounts(c);
       setClients(cs.clients);
-      setInboxAwaiting(ib.total);
+      setInboxAwaiting(ib.awaiting_review);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "failed to load dashboard");
     }

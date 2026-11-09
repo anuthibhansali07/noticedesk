@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from app.agents.notice_triage import generate_triage, load_triage_input
-from app.core.errors import NotFoundError, ValidationError
+from app.core.errors import NotFoundError, llm_error_to_app_error
 from app.core.logging import get_logger
 from app.middleware.tenant_context import CurrentContext
 from app.services import audit
@@ -59,16 +59,14 @@ async def run_triage(ctx: CurrentContext, notice_id: UUID) -> dict[str, Any]:
     if notice_row is None:
         raise NotFoundError("notice not found")
 
-    # 2. Load context + run agent. Commit the read so the workflow can hold
-    #    its own write transaction without lock contention.
+    # 2. Load context + run agent.
     ti = await load_triage_input(ctx.session, notice_id=notice_id)
-    await ctx.session.commit()
 
     try:
         triage = await generate_triage(ti)
     except LLMError as e:
-        logger.exception("triage generation failed")
-        raise ValidationError(f"triage failed: {e}") from e
+        logger.exception("triage generation failed: %s", e)
+        raise llm_error_to_app_error(e, action="triage") from e
 
     # 3. Persist. We keep the previous summary's resolved checklist items so
     #    a re-run doesn't wipe partner work.
@@ -316,6 +314,10 @@ async def mark_requirement_not_applicable(
 async def _fetch_triage_payload(
     ctx: CurrentContext, notice_id: UUID
 ) -> dict[str, Any]:
+    await ctx.session.execute(
+        text("SELECT set_config('app.current_tenant', :tid, true)"),
+        {"tid": str(ctx.claims.tenant_id)},
+    )
     triage_row = (
         await ctx.session.execute(
             text(
@@ -425,3 +427,5 @@ async def _refresh_triage_status(ctx: CurrentContext, notice_id: UUID) -> None:
         ),
         {"s": new_status, "nid": str(notice_id)},
     )
+
+

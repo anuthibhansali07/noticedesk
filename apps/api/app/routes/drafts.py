@@ -21,19 +21,31 @@ from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from app.core.errors import NotFoundError, ValidationError
+from app.core.config import get_settings
+from app.core.errors import NotFoundError, ValidationError, llm_error_to_app_error
+from app.core.logging import get_logger
 from app.middleware.tenant_context import CurrentContext
 from app.services import audit
 from app.services.docx_export import CoverSheetData, render_draft_docx
-from app.workflows.drafting import GenerateDraftJob, run_generate_draft
+from app.services.llm import LLMError
+from app.workflows.drafting import (
+    GenerateDraftJob,
+    drafts_optional_columns,
+    run_generate_draft,
+)
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
 
 class GenerateDraftRequest(BaseModel):
     tone: Literal["formal", "assertive", "conciliatory"] = "formal"
-    partner_instructions: str = ""
+    partner_instructions: str = Field(default="", max_length=4000)
     include_cross_registration: bool = False
+    format_profile: Literal[
+        "full_submission", "tabular_reconciliation", "adjournment"
+    ] = "full_submission"
 
 
 @router.post("/notices/{notice_id}/draft", status_code=201)
@@ -67,8 +79,18 @@ async def generate_draft_for_notice(
         tone=body.tone,
         partner_instructions=body.partner_instructions,
         include_cross_registration=body.include_cross_registration,
+        format_profile=body.format_profile,
     )
-    result = await run_generate_draft(job)
+    try:
+        result = await run_generate_draft(job)
+    except LLMError as e:
+        # Previously bubbled out as a bare 500 ("internal server error") on a
+        # Gemini 429. Log the provider detail; send the partner a clean
+        # 429 / 502 instead.
+        logger.exception("draft generation failed: %s", e)
+        raise llm_error_to_app_error(e, action="draft") from e
+    except ValueError as e:
+        raise NotFoundError(str(e)) from e
     return {
         "draft_id": str(result.draft_id),
         "version": result.version,
@@ -82,11 +104,13 @@ async def list_drafts_for_matter(
     ctx: CurrentContext, matter_id: UUID
 ) -> dict[str, Any]:
     """List every draft version on a matter for the version chip + diff UI."""
+    opt = await drafts_optional_columns(ctx.session)
+    opt_select = "".join(f", d.{c}" for c in opt)
     rows = (
         await ctx.session.execute(
             text(
-                """
-                SELECT d.draft_id, d.version, d.status, d.tone,
+                f"""
+                SELECT d.draft_id, d.version, d.status, d.tone{opt_select},
                        d.model_used, d.prompt_version,
                        d.citation_summary, d.generated_at,
                        u.name AS generated_by_name
@@ -106,6 +130,8 @@ async def list_drafts_for_matter(
                 "version": r["version"],
                 "status": r["status"],
                 "tone": r["tone"],
+                "format_profile": r.get("format_profile"),
+                "notice_id": str(r["notice_id"]) if r.get("notice_id") else None,
                 "model_used": r["model_used"],
                 "prompt_version": r["prompt_version"],
                 "citation_summary": r["citation_summary"],
@@ -122,11 +148,13 @@ async def list_drafts_for_matter(
 
 @router.get("/drafts/{draft_id}")
 async def get_draft(ctx: CurrentContext, draft_id: UUID) -> dict[str, Any]:
+    opt = await drafts_optional_columns(ctx.session)
+    opt_select = "".join(f", d.{c}" for c in opt)
     row = (
         await ctx.session.execute(
             text(
-                """
-                SELECT d.draft_id, d.matter_id, d.version, d.status, d.tone,
+                f"""
+                SELECT d.draft_id, d.matter_id, d.version, d.status, d.tone{opt_select},
                        d.model_used, d.prompt_version, d.sections,
                        d.citation_summary, d.paragraph_to_source_map,
                        d.internal_partner_note, d.edits_log, d.generated_at,
@@ -166,6 +194,8 @@ async def get_draft(ctx: CurrentContext, draft_id: UUID) -> dict[str, Any]:
         "version": row["version"],
         "status": row["status"],
         "tone": row["tone"],
+        "format_profile": row.get("format_profile"),
+        "notice_id": str(row["notice_id"]) if row.get("notice_id") else None,
         "model_used": row["model_used"],
         "prompt_version": row["prompt_version"],
         "sections": row["sections"] or [],
@@ -219,11 +249,14 @@ async def edit_section(
     and every other section verbatim; only the targeted section's body_html
     changes. ``edits_log`` on the new version captures who changed what.
     """
+    opt = await drafts_optional_columns(ctx.session)
+    opt_select = "".join(f", {c}" for c in opt)
+    opt_values = "".join(f", :{c}" for c in opt)
     src = (
         await ctx.session.execute(
             text(
-                """
-                SELECT matter_id, sections, citation_summary,
+                f"""
+                SELECT matter_id, sections, citation_summary{opt_select},
                        paragraph_to_source_map, internal_partner_note,
                        tone, model_used, prompt_version, edits_log
                 FROM drafts WHERE draft_id = :did
@@ -284,12 +317,12 @@ async def edit_section(
     new_id = uuid4()
     await ctx.session.execute(
         text(
-            """
+            f"""
             INSERT INTO drafts (
                 draft_id, tenant_id, matter_id, version, status,
                 model_used, prompt_version, tone, sections, citation_summary,
                 paragraph_to_source_map, internal_partner_note, edits_log,
-                content, generated_at, generated_by_user_id
+                content, generated_at, generated_by_user_id{opt_select}
             ) VALUES (
                 :did, :tid, :mid, :ver, 'draft',
                 :model, :pv, :tone,
@@ -297,11 +330,13 @@ async def edit_section(
                 CAST(:csum AS JSONB),
                 CAST(:pmap AS JSONB),
                 :ipn, CAST(:elog AS JSONB),
-                CAST(:sections AS JSONB), NOW(), :uid
+                CAST(:sections AS JSONB), NOW(), :uid{opt_values}
             )
             """
         ),
         {
+            # Carry the notice link + format profile onto the edited version.
+            **{c: (str(src[c]) if src[c] is not None else None) for c in opt},
             "did": str(new_id),
             "tid": ctx.claims.tenant_id,
             "mid": str(src["matter_id"]),
@@ -382,27 +417,59 @@ async def export_draft(
     Audit-logs draft.exported with mode + version so partners can see who
     pulled which version for filing.
     """
+    # The cover sheet must describe the notice THIS draft answers. Earlier
+    # code took the matter's earliest-due open notice, so on a matter with
+    # both a s.142(1) and a s.143(2) notice the s.143(2) reply was exported
+    # with the s.142(1) type + due date. Prefer drafts.notice_id, then the
+    # notice id the workflow records in paragraph_to_source_map (covers a DB
+    # without migration 0023 and drafts made before it), and only then the
+    # old heuristic.
+    opt = await drafts_optional_columns(ctx.session)
+    source_map_notice = (
+        "(SELECT (e->'source'->>'notice_id')::uuid "
+        "FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.paragraph_to_source_map) = 'array' "
+        "THEN d.paragraph_to_source_map ELSE '[]'::jsonb END) e "
+        "WHERE e->'source'->>'notice_id' "
+        "~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "
+        "LIMIT 1)"
+    )
+    draft_notice = (
+        f"COALESCE(d.notice_id, {source_map_notice})"
+        if "notice_id" in opt
+        else source_map_notice
+    )
+    notice_match = (
+        "(dn.notice_id IS NOT NULL AND nn.notice_id = dn.notice_id) OR "
+        "(dn.notice_id IS NULL AND nn.matter_id = m.matter_id "
+        "AND nn.lifecycle_status <> 'closed')"
+    )
     row = (
         await ctx.session.execute(
             text(
-                """
+                f"""
                 SELECT d.draft_id, d.version, d.sections, d.internal_partner_note,
                        d.matter_id,
                        c.legal_name AS client_legal_name, c.pan AS client_pan,
                        r.registration_type, r.identifier_value, r.state_name,
                        n.document_type, n.authority, n.due_date,
-                       n.financial_year, n.assessment_year,
+                       COALESCE(n.financial_year, m.financial_year) AS financial_year,
+                       COALESCE(n.assessment_year, m.assessment_year) AS assessment_year,
                        t.legal_name AS firm_name
                 FROM drafts d
                 JOIN matters m ON m.matter_id = d.matter_id
                 JOIN clients c ON c.client_id = m.client_id
                 JOIN client_registrations r ON r.registration_id = m.registration_id
                 JOIN tenants t ON t.tenant_id = d.tenant_id
-                LEFT JOIN notices n ON n.matter_id = m.matter_id
-                    AND n.lifecycle_status <> 'closed'
+                CROSS JOIN LATERAL (SELECT {draft_notice} AS notice_id) dn
+                LEFT JOIN LATERAL (
+                    SELECT nn.document_type, nn.authority, nn.due_date,
+                           nn.financial_year, nn.assessment_year
+                    FROM notices nn
+                    WHERE {notice_match}
+                    ORDER BY nn.due_date ASC NULLS LAST
+                    LIMIT 1
+                ) n ON TRUE
                 WHERE d.draft_id = :did
-                ORDER BY n.due_date ASC NULLS LAST
-                LIMIT 1
                 """
             ),
             {"did": str(draft_id)},
@@ -426,7 +493,7 @@ async def export_draft(
     # name via env without seeding a new tenant. Falls through to the DB
     # value when not set.
     firm_name = (
-        __import__("os").environ.get("DEMO_FIRM_NAME_OVERRIDE")
+        get_settings().demo_firm_name_override
         or row["firm_name"]
     )
     cover = CoverSheetData(

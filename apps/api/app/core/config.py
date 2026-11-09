@@ -134,6 +134,16 @@ class Settings(BaseSettings):
     # api.openai.com — Groq, Cerebras, Together, Fireworks, OpenRouter,
     # Ollama all work. Leave empty for OpenAI itself.
     openai_base_url: str = ""
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    # Comma-separated models tried (same endpoint / key) when the primary
+    # OpenAI-compatible model stays rate-limited, e.g.
+    # "gemini-2.5-flash-lite,gemini-2.0-flash" — each Gemini free-tier
+    # model has its own RPM / RPD bucket.
+    openai_fallback_models: str = ""
+    # Backoff schedule (seconds, comma-separated) for HTTP 429 /
+    # RESOURCE_EXHAUSTED before a model is given up on. "" disables retries.
+    llm_rate_limit_retry_delays: str = "2,5"
 
     # ---- Per-agent model overrides -----------------------------------------
     # Drafting needs Opus's writing quality (it produces 6-12K output tokens
@@ -152,6 +162,38 @@ class Settings(BaseSettings):
     document_parsing_prompt_version: str = "v1"
     document_parsing_max_tokens: int = 4096
     document_parsing_temperature: float = 0.0
+
+    drafting_ocr_excerpt_chars: int = 20000
+    drafting_max_output_tokens: int = 16000
+    drafting_supporting_doc_excerpt_chars: int = 5000
+    drafting_supporting_evidence_max_chars: int = 40000
+
+    triage_ocr_excerpt_chars: int = 20000
+    triage_max_output_tokens: int = 4000
+
+    demo_firm_name_override: str | None = None
+    stub_default_canned: str | None = None
+
+    # ---- Citation verification ---------------------------------------------
+    citation_provider: str = "stub"
+    indiankanoon_api_token: str | None = None
+
+    @property
+    def openai_fallback_model_list(self) -> list[str]:
+        return [m.strip() for m in self.openai_fallback_models.split(",") if m.strip()]
+
+    @property
+    def rate_limit_retry_delays(self) -> tuple[float, ...]:
+        out: list[float] = []
+        for part in self.llm_rate_limit_retry_delays.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                out.append(max(0.0, float(part)))
+            except ValueError:
+                continue
+        return tuple(out)
 
     def model_for_agent(self, agent: str, *, provider: str) -> str:
         """Resolve the model name for a (provider, agent) combination.

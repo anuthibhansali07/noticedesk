@@ -4,6 +4,7 @@
 // components fetch the API directly.
 
 import type {
+  InboxItem,
   InboxList,
   OcrTextResponse,
   UploadResponse,
@@ -16,9 +17,17 @@ export async function fetchInbox(): Promise<InboxList> {
   if (!res.ok) throw new Error(`failed to load inbox (${res.status})`);
   const data = await res.json();
   if (Array.isArray(data)) {
-    return { items: data, total: data.length };
+    return { items: data, total: data.length, awaiting_review: countAwaiting(data) };
   }
-  return data as InboxList;
+  const list = data as Partial<InboxList> & { items: InboxItem[]; total: number };
+  // A backend without awaiting_review (the Java one): count from the rows.
+  return { ...list, awaiting_review: list.awaiting_review ?? countAwaiting(list.items) };
+}
+
+// Routed rows are done and rejected rows are parked: neither awaits review.
+function countAwaiting(items: InboxItem[]): number {
+  return items.filter((i) => i.routing_status !== "routed" && i.routing_status !== "rejected")
+    .length;
 }
 
 export async function uploadDocument(
@@ -60,6 +69,41 @@ export async function fetchOcrText(inboxId: string): Promise<OcrTextResponse> {
   return (await res.json()) as OcrTextResponse;
 }
 
+// Error carrying the HTTP status + the server's suggested wait, so callers can
+// treat AI-provider rate limits (HTTP 429) differently from real failures.
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+  readonly retryAfterSeconds: number | null;
+
+  constructor(message: string, status: number, code: string | null, retryAfterSeconds: number | null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+
+  get isRateLimited(): boolean {
+    return this.status === 429;
+  }
+}
+
+export async function apiErrorFromResponse(res: Response, fallback: string): Promise<ApiError> {
+  const j = (await res.json().catch(() => null)) as {
+    error?: { code?: string; message?: string; details?: { retry_after_seconds?: number } };
+  } | null;
+  const header = Number(res.headers.get("retry-after"));
+  const retryAfter =
+    j?.error?.details?.retry_after_seconds ?? (Number.isFinite(header) && header > 0 ? header : null);
+  const message =
+    j?.error?.message ??
+    (res.status === 429
+      ? "AI service is busy (rate limit reached). Please wait a moment and retry."
+      : `${fallback} (${res.status})`);
+  return new ApiError(message, res.status, j?.error?.code ?? null, res.status === 429 ? retryAfter ?? 30 : retryAfter);
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
@@ -90,6 +134,10 @@ export function routeManually(
   body: ManualRouteBody,
 ): Promise<{ inbox_id: string; routing_status: string }> {
   return postJson(`/api/route-manually/${inboxId}`, body);
+}
+
+export function retryOcr(inboxId: string): Promise<{ inbox_id: string; ocr_status: string }> {
+  return postJson(`/api/ocr/${inboxId}/retry`, {});
 }
 
 export function rejectInbox(
@@ -552,11 +600,20 @@ export interface DraftCitation {
   action_taken: "passed" | "flagged" | "stripped" | null;
 }
 
+export type DraftTone = "formal" | "assertive" | "conciliatory";
+
+export type DraftFormatProfile =
+  | "full_submission"
+  | "tabular_reconciliation"
+  | "adjournment";
+
 export interface DraftSummary {
   draft_id: string;
   version: number;
   status: string;
   tone: string | null;
+  format_profile?: DraftFormatProfile | null;
+  notice_id?: string | null;
   model_used: string | null;
   prompt_version: string | null;
   citation_summary: Record<string, number> | null;
@@ -574,9 +631,10 @@ export interface DraftDetail extends DraftSummary {
 }
 
 export interface GenerateDraftBody {
-  tone?: "formal" | "assertive" | "conciliatory";
+  tone?: DraftTone;
   partner_instructions?: string;
   include_cross_registration?: boolean;
+  format_profile?: DraftFormatProfile;
 }
 
 export async function generateDraft(
@@ -593,10 +651,7 @@ export async function generateDraft(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const j = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
-    throw new Error(j?.error?.message ?? `draft generation failed (${res.status})`);
-  }
+  if (!res.ok) throw await apiErrorFromResponse(res, "draft generation failed");
   return (await res.json()) as {
     draft_id: string;
     version: number;
@@ -702,6 +757,24 @@ export async function uploadMatterDocument(
   return (await res.json()) as { document_id: string; filename: string; size_bytes: number };
 }
 
+export interface DocumentDetail extends MatterDocument {
+  matter_id: string | null;
+  file_hash: string | null;
+  previewable: boolean;
+  extracted_text: string | null;
+  extracted_text_truncated: boolean;
+}
+
+export async function fetchDocument(documentId: string): Promise<DocumentDetail> {
+  const res = await fetch(`/api/documents/${documentId}`, { cache: "no-store" });
+  if (!res.ok) throw await apiErrorFromResponse(res, "failed to load document");
+  return (await res.json()) as DocumentDetail;
+}
+
+export function documentFileUrl(documentId: string, opts: { download?: boolean } = {}): string {
+  return `/api/documents/${documentId}/file${opts.download ? "?download=1" : ""}`;
+}
+
 export async function updateDocument(
   documentId: string,
   body: { document_type?: string; lifecycle_stage?: DocumentLifecycle },
@@ -791,10 +864,7 @@ export async function fetchTriage(noticeId: string): Promise<TriagePayload> {
 
 export async function runTriage(noticeId: string): Promise<TriagePayload> {
   const res = await fetch(`/api/notices/${noticeId}/triage`, { method: "POST" });
-  if (!res.ok) {
-    const j = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
-    throw new Error(j?.error?.message ?? `triage failed (${res.status})`);
-  }
+  if (!res.ok) throw await apiErrorFromResponse(res, "triage failed");
   return (await res.json()) as TriagePayload;
 }
 

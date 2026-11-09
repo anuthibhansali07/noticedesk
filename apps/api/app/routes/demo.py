@@ -7,7 +7,6 @@ they're looking at a real LLM-generated draft or a deterministic template.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from fastapi import APIRouter
@@ -37,8 +36,8 @@ async def active_providers() -> dict[str, Any]:
             "is_stub": s.ocr_provider_primary == "stub",
         },
         "citation": {
-            "primary": os.environ.get("CITATION_PROVIDER", "stub"),
-            "is_stub": os.environ.get("CITATION_PROVIDER", "stub") == "stub",
+            "primary": get_settings().citation_provider,
+            "is_stub": get_settings().citation_provider == "stub",
         },
         "auth": {
             "provider": s.auth_provider,

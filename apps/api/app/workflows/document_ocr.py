@@ -80,11 +80,16 @@ async def run_ocr_pipeline(job: OcrJob) -> None:
         await _mark_failed(job, f"storage error: {e}")
         return
 
-    extracted = await _try_with_retries(get_primary_provider(), file_bytes, mime_type)
+    extracted, primary_err = await _try_with_retries(
+        get_primary_provider(), file_bytes, mime_type
+    )
     if extracted is None:
         fallback = get_fallback_provider()
         if fallback is None:
-            await _mark_failed(job, "primary OCR failed and no fallback configured")
+            # Keep the provider's own reason: "primary OCR failed and no
+            # fallback configured" alone hid e.g. a Gemini 503 "model is
+            # experiencing high demand", which only needs a retry later.
+            await _mark_failed(job, _failure_message(primary_err))
             return
         try:
             extracted = await fallback.extract(file_bytes, mime_type)
@@ -96,14 +101,35 @@ async def run_ocr_pipeline(job: OcrJob) -> None:
     await _mark_completed(job, extracted)
 
 
+# Backoff between attempts on a transient OCR error (seconds). The old
+# 1 s / 2 s schedule gave up after ~3 s, far too soon for a provider that
+# reports "model is experiencing high demand"; ~22 s rides out short spikes.
+OCR_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0, 15.0)
+
+
+def _failure_message(err: Exception | None) -> str:
+    if err is None:
+        return "OCR failed and no fallback provider is configured"
+    hint = (
+        " — the OCR service is busy; use Retry OCR in a few minutes"
+        if isinstance(err, OCRTransientError)
+        else ""
+    )
+    return f"OCR failed: {err}{hint}"[:1000]
+
+
 async def _try_with_retries(
-    provider, file_bytes: bytes, mime_type: str, *, attempts: int = 3
-) -> ExtractedDoc | None:
-    delay = 1.0
+    provider,
+    file_bytes: bytes,
+    mime_type: str,
+    *,
+    delays: tuple[float, ...] = OCR_RETRY_DELAYS,
+) -> tuple[ExtractedDoc | None, Exception | None]:
+    attempts = len(delays) + 1
     last_err: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return await provider.extract(file_bytes, mime_type)
+            return await provider.extract(file_bytes, mime_type), None
         except OCRTransientError as e:
             last_err = e
             logger.warn(
@@ -113,15 +139,14 @@ async def _try_with_retries(
                 error=str(e),
             )
             if attempt < attempts:
-                await asyncio.sleep(delay)
-                delay *= 2
+                await asyncio.sleep(delays[attempt - 1])
         except OCRError as e:
             # Permanent: don't retry primary, let fallback handle it.
             logger.error("ocr_permanent_error", provider=provider.name, error=str(e))
             last_err = e
             break
     logger.warn("ocr_giving_up_on_provider", provider=provider.name, error=str(last_err))
-    return None
+    return None, last_err
 
 
 async def _fetch_inbox_row(session, inbox_id: UUID) -> dict[str, str] | None:

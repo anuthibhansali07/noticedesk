@@ -17,7 +17,8 @@ export type RoutingStatus =
   | "new_gst_registration_detected"
   | "pan_gstin_mismatch"
   | "no_identifier_found"
-  | "manual_assignment";
+  | "manual_assignment"
+  | "rejected";
 
 export type IngestChannel =
   | "web_upload"
@@ -50,7 +51,10 @@ export interface InboxItem {
 
 export interface InboxList {
   items: InboxItem[];
+  // Every inbox row (paging).
   total: number;
+  // Not yet routed and not rejected: what "N awaiting review" badges show.
+  awaiting_review: number;
 }
 
 export interface UploadResponse {
@@ -93,4 +97,5 @@ export const ROUTING_STATUS_LABELS: Record<RoutingStatus, string> = {
   pan_gstin_mismatch: "PAN / GSTIN mismatch",
   no_identifier_found: "No identifier",
   manual_assignment: "Manual assignment needed",
+  rejected: "Rejected",
 };
