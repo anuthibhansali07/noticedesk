@@ -13,7 +13,6 @@ with the secondary as a fallback, parsed as strict JSON.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -22,11 +21,13 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.llm import (
     JsonSchemaValidationError,
     LLMError,
     LLMProvider,
+    LLMRateLimitError,
     LLMTransientError,
     get_llm_for_agent,
     get_secondary_llm_for_agent,
@@ -39,15 +40,15 @@ PROMPT_VERSION: Final[str] = "notice_triage_v1"
 
 # Same 20K char default as the drafter — keeps token budget predictable and
 # is plenty for the agent to identify what evidence is missing.
-TRIAGE_OCR_EXCERPT_CHARS: Final[int] = int(
-    os.environ.get("TRIAGE_OCR_EXCERPT_CHARS", "20000")
+TRIAGE_OCR_EXCERPT_CHARS: Final[int] = (
+    get_settings().triage_ocr_excerpt_chars
 )
 
 # Smaller cap than the drafter — triage output is a summary + ~10 checklist
 # items, comfortably under 2K tokens. 4000 leaves headroom for verbose
 # rationales without inviting runaway.
-TRIAGE_MAX_OUTPUT_TOKENS: Final[int] = int(
-    os.environ.get("TRIAGE_MAX_OUTPUT_TOKENS", "4000")
+TRIAGE_MAX_OUTPUT_TOKENS: Final[int] = (
+    get_settings().triage_max_output_tokens
 )
 
 # Doc types the agent is allowed to emit. Kept in sync with the prompt and
@@ -325,6 +326,9 @@ async def generate_triage(ti: TriageInput) -> GeneratedTriage:
     user = _render_user_prompt(user_template, ti)
 
     last_err: Exception | None = None
+    # A rate limit on either provider is the most actionable failure for the
+    # partner ("wait N seconds") so it wins over e.g. a secondary's bad JSON.
+    last_rate_limit: LLMRateLimitError | None = None
     for provider in (
         get_llm_for_agent("triage"),
         get_secondary_llm_for_agent("triage"),
@@ -355,9 +359,13 @@ async def generate_triage(ti: TriageInput) -> GeneratedTriage:
         except LLMTransientError as e:
             logger.warning("triage transient error from %s: %s", provider.name, e)
             last_err = e
+            if isinstance(e, LLMRateLimitError):
+                last_rate_limit = e
             continue
         except (LLMError, JsonSchemaValidationError) as e:
-            logger.exception("triage failed via %s", provider.name)
+            logger.exception("triage failed via %s: %s", provider.name, e)
             last_err = e
-            break
-    raise LLMError(f"triage failed: {last_err}") from last_err
+            continue
+    final_err = last_rate_limit or last_err
+    raise LLMError(f"triage failed: {final_err}") from final_err
+

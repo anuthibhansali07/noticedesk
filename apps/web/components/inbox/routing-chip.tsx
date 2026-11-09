@@ -3,7 +3,7 @@ import {
   type RoutingStatus,
   type InboxItem,
 } from "@noticedesk/shared/inbox";
-import { CheckCircle2, CircleAlert, ShieldAlert, Clock } from "lucide-react";
+import { Ban, CheckCircle2, CircleAlert, ShieldAlert, Clock } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 
@@ -19,6 +19,7 @@ const TONE: Record<RoutingStatus, "neutral" | "warning" | "success" | "danger"> 
   pan_gstin_mismatch: "danger",
   no_identifier_found: "warning",
   manual_assignment: "warning",
+  rejected: "danger",
 };
 
 export function RoutingChip({ item }: Props) {
@@ -28,6 +29,8 @@ export function RoutingChip({ item }: Props) {
       ? CheckCircle2
       : status === "pan_gstin_mismatch"
         ? ShieldAlert
+        : status === "rejected"
+          ? Ban
         : status === "pending"
           ? Clock
           : CircleAlert;

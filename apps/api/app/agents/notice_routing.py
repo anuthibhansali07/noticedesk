@@ -377,10 +377,15 @@ def _coerce_date(value: Any) -> date | None:
     # asyncpg's prepared-statement codec rejects strings where postgres infers
     # DATE — must be a datetime.date. Sanitiser upstream already validates
     # ISO format, so this is a last-mile encoding hop.
+    # Manual assignment also passes parser output that never went through the
+    # sanitiser, so an unparseable date becomes NULL instead of a 500.
     if value is None or isinstance(value, date):
         return value
     if isinstance(value, str):
-        return date.fromisoformat(value)
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            return None
     return None
 
 

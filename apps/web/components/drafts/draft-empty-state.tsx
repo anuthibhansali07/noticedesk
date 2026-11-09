@@ -2,40 +2,24 @@
 
 import { useState } from "react";
 
+import {
+  DEFAULT_DRAFT_OPTIONS,
+  DraftOptionsFields,
+  type DraftOptions,
+} from "@/components/drafts/draft-options";
 import { DraftProgressCard } from "@/components/drafts/draft-progress-card";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/cn";
-
-type Tone = "formal" | "assertive" | "conciliatory";
 
 interface Props {
   busy: boolean;
   error: string | null;
-  onGenerate: (tone: Tone, instructions: string, includeCross: boolean) => Promise<void>;
+  onGenerate: (opts: DraftOptions) => Promise<void>;
+  // Rendered above the button (e.g. the rate-limit countdown notice).
+  notice?: React.ReactNode;
 }
 
-const TONE_OPTIONS: Array<{ value: Tone; label: string; desc: string }> = [
-  {
-    value: "formal",
-    label: "Formal",
-    desc: "Third-person, measured, courteous — the default for first-round replies.",
-  },
-  {
-    value: "assertive",
-    label: "Assertive",
-    desc: "Direct rebuttal where law + facts support it; still courteous.",
-  },
-  {
-    value: "conciliatory",
-    label: "Conciliatory",
-    desc: "Emphasise willingness to comply; request indulgence on procedure.",
-  },
-];
-
-export function DraftEmptyState({ busy, error, onGenerate }: Props) {
-  const [tone, setTone] = useState<Tone>("formal");
-  const [instructions, setInstructions] = useState("");
-  const [includeCross, setIncludeCross] = useState(false);
+export function DraftEmptyState({ busy, error, onGenerate, notice }: Props) {
+  const [opts, setOpts] = useState<DraftOptions>(DEFAULT_DRAFT_OPTIONS);
 
   if (busy) {
     return <DraftProgressCard busy />;
@@ -56,62 +40,9 @@ export function DraftEmptyState({ busy, error, onGenerate }: Props) {
         excluded so the factual matrix stays clean.
       </p>
 
-      <fieldset className="mb-6">
-        <legend className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate">
-          Tone
-        </legend>
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-          {TONE_OPTIONS.map((o) => (
-            <label
-              key={o.value}
-              className={cn(
-                "cursor-pointer rounded-sm border bg-white px-3.5 py-3 transition-colors",
-                tone === o.value
-                  ? "border-gold ring-1 ring-gold"
-                  : "border-slate-line hover:border-slate",
-              )}
-            >
-              <input
-                type="radio"
-                name="tone"
-                value={o.value}
-                checked={tone === o.value}
-                onChange={() => setTone(o.value)}
-                className="sr-only"
-              />
-              <p className="font-serif text-[14px] font-semibold text-navy-deep">
-                {o.label}
-              </p>
-              <p className="mt-1 text-[11.5px] leading-relaxed text-slate">{o.desc}</p>
-            </label>
-          ))}
-        </div>
-      </fieldset>
+      <DraftOptionsFields value={opts} onChange={setOpts} />
 
-      <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.08em] text-slate">
-        Partner instructions (optional)
-      </label>
-      <textarea
-        value={instructions}
-        onChange={(e) => setInstructions(e.target.value)}
-        rows={3}
-        placeholder="e.g. Lean on the limitation point. Officer is open to reconciliation-based closure."
-        className="mb-4 w-full rounded-sm border border-slate-line bg-white px-3.5 py-2 text-[13px] outline-none focus:border-gold"
-      />
-
-      <label className="mb-6 flex items-start gap-2.5 text-[12.5px] text-ink-soft">
-        <input
-          type="checkbox"
-          checked={includeCross}
-          onChange={(e) => setIncludeCross(e.target.checked)}
-          className="mt-0.5"
-        />
-        <span>
-          Include cross-registration context (only check if facts from a
-          sibling state / law are genuinely relevant — they land in their own
-          Section 09 and never in the factual matrix).
-        </span>
-      </label>
+      {notice ? <div className="mb-4">{notice}</div> : null}
 
       {error ? (
         <p className="mb-4 rounded border border-alarm/30 bg-alarm-bg px-3 py-2 text-sm text-alarm">
@@ -119,15 +50,9 @@ export function DraftEmptyState({ busy, error, onGenerate }: Props) {
         </p>
       ) : null}
 
-      <Button
-        variant="gold"
-        size="lg"
-        disabled={busy}
-        onClick={() => onGenerate(tone, instructions, includeCross)}
-      >
+      <Button variant="gold" size="lg" disabled={busy} onClick={() => onGenerate(opts)}>
         Generate draft
       </Button>
     </div>
   );
 }
-

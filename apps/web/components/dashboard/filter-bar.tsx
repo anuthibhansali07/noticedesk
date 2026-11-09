@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ClientSummary } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { stateNameFor } from "@/lib/states";
 
 interface Props {
   clients: ClientSummary[];
@@ -75,11 +76,11 @@ export function FilterBar({
         onSelect={onClientChange}
       />
       <FilterPill
-        label={stateCode ? `State ${stateCode}` : "All states"}
+        label={stateCode ? stateLabel(stateCode) : "All states"}
         active={stateCode !== ""}
         options={[
           { value: "", label: "All states" },
-          ...stateCodes.map((sc) => ({ value: sc, label: `State ${sc}` })),
+          ...stateCodes.map((sc) => ({ value: sc, label: stateLabel(sc) })),
         ]}
         onSelect={onStateChange}
       />
@@ -158,4 +159,11 @@ function FilterPill({
       ) : null}
     </div>
   );
+}
+
+// "Tamil Nadu (33)" rather than a bare "State 33"; unknown codes keep the
+// old form so nothing disappears from the list.
+function stateLabel(code: string): string {
+  const name = stateNameFor(code);
+  return name ? `${name} (${code})` : `State ${code}`;
 }

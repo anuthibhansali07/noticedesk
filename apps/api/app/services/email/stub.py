@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -34,9 +34,9 @@ class StubEmailProvider(EmailProvider):
         self._dir.mkdir(parents=True, exist_ok=True)
 
     async def send(self, message: EmailMessage) -> str:
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         suffix = _safe(message.tag or "msg")
-        to_part = _safe((message.to[0] if message.to else "unknown"))
+        to_part = _safe(message.to[0] if message.to else "unknown")
         message_id = uuid4().hex
         base = self._dir / f"{ts}_{suffix}_{to_part}_{message_id[:8]}"
 

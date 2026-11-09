@@ -2,6 +2,7 @@
 
 import { Download, GitCompare, RefreshCw } from "lucide-react";
 
+import { formatShortLabel, toneLabel } from "@/components/drafts/draft-options";
 import { Button } from "@/components/ui/button";
 import type { DraftDetail, DraftSummary } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -40,11 +41,16 @@ export function DraftToolbar({
         >
           {versions.map((v) => (
             <option key={v.draft_id} value={v.draft_id}>
-              Draft v{v.version}
+              {versionLabel(v)}
               {v.generated_at ? ` · ${shortTs(v.generated_at)}` : ""}
             </option>
           ))}
         </select>
+        <Chip tone="bg-paper-tint text-navy-deep">
+          {[toneLabel(current.tone), formatShortLabel(current.format_profile)]
+            .filter(Boolean)
+            .join(" · ") || "—"}
+        </Chip>
         <Chip tone="bg-success-bg text-success">{verified} verified</Chip>
         <Chip tone="bg-warn-bg text-[#8B5C1F]">{partial} partial</Chip>
         <Chip tone="bg-alarm-bg text-alarm">{stripped} stripped</Chip>
@@ -59,7 +65,7 @@ export function DraftToolbar({
           <GitCompare className="mr-1.5 h-3.5 w-3.5" aria-hidden /> Compare versions
         </Button>
         <Button variant="ghost" size="sm" onClick={onRegenerate} disabled={busy}>
-          <RefreshCw className="mr-1.5 h-3.5 w-3.5" aria-hidden /> Regenerate
+          <RefreshCw className="mr-1.5 h-3.5 w-3.5" aria-hidden /> Regenerate with options…
         </Button>
         <ExportMenu onExport={onExport} />
       </div>
@@ -122,6 +128,13 @@ function ExportMenu({ onExport }: { onExport: (mode: "filing" | "client" | "inte
       </details>
     </div>
   );
+}
+
+// "Draft v2 (Assertive · Tabular)" so iterations are distinguishable in the
+// version dropdown.
+function versionLabel(v: DraftSummary): string {
+  const tags = [toneLabel(v.tone), formatShortLabel(v.format_profile)].filter(Boolean);
+  return `Draft v${v.version}${tags.length ? ` (${tags.join(" · ")})` : ""}`;
 }
 
 function shortTs(iso: string): string {

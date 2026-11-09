@@ -1,10 +1,12 @@
 "use client";
 
 import type { InboxItem } from "@noticedesk/shared/inbox";
-import { FileText } from "lucide-react";
+import { FileText, RotateCw } from "lucide-react";
+import { useState } from "react";
 
 import { AnomalyActions } from "@/components/inbox/anomaly-actions";
 import { Button } from "@/components/ui/button";
+import { retryOcr } from "@/lib/api";
 import { formatBytes, formatDateTime } from "@/lib/format";
 
 import { ChannelChip } from "./channel-chip";
@@ -19,9 +21,30 @@ interface InboxRowProps {
 
 export function InboxRow({ item, onView, onResolved }: InboxRowProps) {
   const ocrReady = item.ocr_status === "completed";
+  const ocrFailed = item.ocr_status === "failed";
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  async function handleRetryOcr() {
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      await retryOcr(item.inbox_id);
+      onResolved();
+    } catch (e) {
+      setRetryError(e instanceof Error ? e.message : "could not retry OCR");
+    } finally {
+      setRetrying(false);
+    }
+  }
+  const rejected = item.routing_status === "rejected";
+  const rejectionReason = rejected
+    ? String(item.routing_anomaly_details?.reason ?? "").trim()
+    : "";
   const hasAnomaly =
     item.routing_status !== "routed" &&
     item.routing_status !== "pending" &&
+    !rejected &&
     item.parse_status === "completed";
 
   return (
@@ -49,15 +72,32 @@ export function InboxRow({ item, onView, onResolved }: InboxRowProps) {
                 ? ` · ${(item.parse_confidence * 100).toFixed(0)}% confidence`
                 : null}
             </p>
-            {item.ocr_status === "failed" && item.ocr_error ? (
+            {ocrFailed && item.ocr_error ? (
               <p className="mt-1 text-xs text-red-600">{item.ocr_error}</p>
+            ) : null}
+            {retryError ? (
+              <p className="mt-1 text-xs text-red-600">{retryError}</p>
             ) : null}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:justify-end">
           <ChannelChip channel={item.ingest_channel} />
-          <OcrStatusChip status={item.ocr_status} />
-          <RoutingChip item={item} />
+          {/* "Ready for review" (OCR done) is misleading on a rejected row. */}
+          {rejected ? null : <OcrStatusChip status={item.ocr_status} />}
+          {/* Routing never starts when OCR failed — a spinning "Routing"
+              chip there suggested work still in progress. */}
+          {ocrFailed ? null : <RoutingChip item={item} />}
+          {ocrFailed ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={retrying}
+              onClick={() => void handleRetryOcr()}
+            >
+              <RotateCw className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+              {retrying ? "Retrying…" : "Retry OCR"}
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="sm"
@@ -77,6 +117,17 @@ export function InboxRow({ item, onView, onResolved }: InboxRowProps) {
             </div>
           ) : null}
           <AnomalyActions item={item} onResolved={onResolved} />
+        </div>
+      ) : null}
+      {rejected ? (
+        <div className="border-t border-slate-100 pt-3 text-xs text-slate-600">
+          Rejected — kept on file but will not be routed.
+          {rejectionReason ? (
+            <>
+              {" "}
+              Reason: <span className="italic">{rejectionReason}</span>
+            </>
+          ) : null}
         </div>
       ) : null}
     </li>

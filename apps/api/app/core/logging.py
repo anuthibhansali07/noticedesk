@@ -9,6 +9,10 @@ import structlog
 
 def configure_logging(level: str = "INFO") -> None:
     logging.basicConfig(level=level, format="%(message)s")
+    # httpx logs each request URL at INFO; some providers put API keys in
+    # the query string, so keep these loggers at WARNING.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,

@@ -21,6 +21,8 @@ import json
 import re
 from typing import Any
 
+from app.core.config import get_settings
+
 _CANNED_BY_FILENAME: dict[str, dict[str, Any]] = {
     "drc-01.pdf": {
         "document_type": "DRC-01A",
@@ -66,6 +68,166 @@ _CANNED_BY_FILENAME: dict[str, dict[str, Any]] = {
         "parse_confidence": 0.90,
         "fields_needing_review": [],
     },
+
+    # ── Mock Notice 1: GST ASMT-10 · Acme Industries · MH · FY 2022-23 ─────────
+    "ASMT10_Acme_MH_FY2223.pdf": {
+        "document_type": "ASMT-10",
+        "client_name_on_document": "Acme Industries Private Limited",
+        "pans_extracted": [{"value": "AAACA9876B", "location": "header"}],
+        "gstins_extracted": [
+            {"value": "27AAACA9876B1Z5", "location": "header", "state_code": "27"}
+        ],
+        "notice_number": "ASMT10-MH-2026-00789",
+        "din_or_rfn": "DIN20260117ASMT10004587",
+        "issue_date": "2026-01-17",
+        "receipt_date": "2026-01-19",
+        "due_date": "2026-02-17",
+        "hearing_date": None,
+        "financial_year": "2022-23",
+        "assessment_year": None,
+        "authority": "State Tax Officer, Range 5, Pune-1",
+        "demand_amount": 1675600,
+        "issues": ["ITC mismatch FY 22-23 -- excess ITC availed vs GSTR-2A: Rs. 14,20,000"],
+        "documents_required": [
+            "GSTR-3B reconciliation (month-wise)",
+            "Tax invoices for disputed ITC",
+            "Supplier communication if any",
+        ],
+        "parse_confidence": 0.93,
+        "fields_needing_review": [],
+    },
+    # ── Mock Notice 2: GST DRC-01 · Sunteck Realty · MH · FY 2021-22 ───────────
+    "DRC01_Sunteck_MH_FY2122.pdf": {
+        "document_type": "DRC-01",
+        "client_name_on_document": "Sunteck Realty Holdings Ltd",
+        "pans_extracted": [{"value": "AABCS5678C", "location": "header"}],
+        "gstins_extracted": [
+            {"value": "27AABCS5678C1Z7", "location": "header", "state_code": "27"}
+        ],
+        "notice_number": "DRC0122MH0008871",
+        "din_or_rfn": "DRC0122MH0008871",
+        "issue_date": "2026-02-10",
+        "receipt_date": "2026-02-12",
+        "due_date": "2026-05-20",
+        "hearing_date": None,
+        "financial_year": "2021-22",
+        "assessment_year": None,
+        "authority": "Joint Commissioner of Central Tax, Mumbai West",
+        "demand_amount": 4750000,
+        "issues": ["GST demand on Transferable Development Rights (TDR) -- FY 2021-22"],
+        "documents_required": ["JDA agreements", "TDR transfer documents", "GST computation workings"],
+        "parse_confidence": 0.91,
+        "fields_needing_review": [],
+    },
+    # ── Mock Notice 3: IT 142(1) · Acme Industries · AY 2024-25 ────────────────
+    "IT_142_1_Acme_AY2425.pdf": {
+        "document_type": "IT_142(1)",
+        "client_name_on_document": "Acme Industries Private Limited",
+        "pans_extracted": [{"value": "AAACA9876B", "location": "header"}],
+        "gstins_extracted": [],
+        "notice_number": "ITBA/ASS/F/142(1)/2025-26/0001",
+        "din_or_rfn": "ITBA/ASS/F/142(1)/2025-26/0001",
+        "issue_date": "2026-01-19",
+        "receipt_date": "2026-01-21",
+        "due_date": "2026-05-19",
+        "hearing_date": None,
+        "financial_year": None,
+        "assessment_year": "2024-25",
+        "authority": "ACIT Circle 3(1), Mumbai",
+        "demand_amount": None,
+        "issues": ["Information requisition -- large cash transactions AY 2024-25"],
+        "documents_required": [
+            "Cash Flow Statement FY 2023-24",
+            "Bank statements (all accounts) for FY 2023-24",
+            "Form 26AS / AIS reconciliation",
+            "Fixed Asset Register as on 31-Mar-2024",
+        ],
+        "parse_confidence": 0.94,
+        "fields_needing_review": [],
+    },
+    # ── Mock Notice 4: IT 143(2) Scrutiny · Patil Trading · AY 2023-24 ─────────
+    "IT_143_2_Patil_AY2324.pdf": {
+        "document_type": "IT_143(2)",
+        "client_name_on_document": "Patil Trading Company",
+        "pans_extracted": [{"value": "APBPP1234D", "location": "header"}],
+        "gstins_extracted": [],
+        "notice_number": "ITBA/ASS/F/143(2)/2025-26/0048",
+        "din_or_rfn": "ITBA/ASS/F/143(2)/2025-26/0048",
+        "issue_date": "2026-01-16",
+        "receipt_date": "2026-01-18",
+        "due_date": "2026-05-16",
+        "hearing_date": None,
+        "financial_year": None,
+        "assessment_year": "2023-24",
+        "authority": "ITO Ward 9(1), Mumbai",
+        "demand_amount": None,
+        "issues": [
+            "Limited scrutiny (CASS) -- sundry creditors verification",
+            "Purchases from cancelled GSTIN vendors",
+            "Commission and brokerage expense query",
+        ],
+        "documents_required": [
+            "Audited balance sheet and P&L for FY 2022-23",
+            "Creditor-wise ledger and confirmation letters",
+            "Purchase invoices from flagged suppliers",
+            "Form 26AS / AIS reconciliation AY 2023-24",
+        ],
+        "parse_confidence": 0.92,
+        "fields_needing_review": [],
+    },
+    # ── Mock Notice 5: GST DRC-01A · Dr. Anjali Kapoor · Delhi · FY 2023-24 ────
+    "DRC01A_DrKapoor_DL_FY2324.pdf": {
+        "document_type": "DRC-01A",
+        "client_name_on_document": "Dr. Anjali Kapoor",
+        "pans_extracted": [{"value": "AANPK7890F", "location": "header"}],
+        "gstins_extracted": [
+            {"value": "07AANPK7890F1ZD", "location": "header", "state_code": "07"}
+        ],
+        "notice_number": "DRC0124DL0014721",
+        "din_or_rfn": "DIN20260124DRC01A007891",
+        "issue_date": "2026-01-24",
+        "receipt_date": "2026-01-26",
+        "due_date": "2026-05-24",
+        "hearing_date": None,
+        "financial_year": "2023-24",
+        "assessment_year": None,
+        "authority": "State Tax Officer, Delhi North Division",
+        "demand_amount": 8000,
+        "issues": ["Late GSTR-1 filing fee for all four quarters of FY 2023-24"],
+        "documents_required": ["Payment of Rs. 8,000 via DRC-03 on GST portal"],
+        "parse_confidence": 0.96,
+        "fields_needing_review": [],
+    },
+    # ── Mock Notice 6: IT 148A Reassessment · Verma Software · AY 2022-23 ──────
+    "IT_148_Reassessment_Verma_AY2223.pdf": {
+        "document_type": "IT_148_148A",
+        "client_name_on_document": "Verma Software Solutions LLP",
+        "pans_extracted": [{"value": "AADFV4321E", "location": "header"}],
+        "gstins_extracted": [],
+        "notice_number": "ITBA/AST/F/148A/2025-26/0019",
+        "din_or_rfn": "ITBA/AST/F/148A/2025-26/0019",
+        "issue_date": "2026-01-10",
+        "receipt_date": "2026-01-13",
+        "due_date": "2026-05-10",
+        "hearing_date": None,
+        "financial_year": None,
+        "assessment_year": "2022-23",
+        "authority": "DCIT Circle 4(2), Bengaluru",
+        "demand_amount": 32500000,
+        "issues": [
+            "Reassessment u/s 148A(b) -- unexplained share capital Rs. 2.5 Cr (Section 68)",
+            "Unexplained foreign remittance Rs. 75 lakh (Section 69A)",
+        ],
+        "documents_required": [
+            "Share subscription agreements and share certificates",
+            "Board resolution for share issue",
+            "Investor KYC and 3-year IT returns",
+            "FIRC and service agreements for foreign remittances",
+            "Transfer pricing documentation u/s 92CE if applicable",
+        ],
+        "parse_confidence": 0.89,
+        "fields_needing_review": ["demand_amount"],
+    },
 }
 
 
@@ -87,11 +249,13 @@ def lookup_canned_response(user_prompt: str) -> str | None:
     """
     if "MATTER CONTEXT" in user_prompt:
         return _drafting_canned(user_prompt)
+    if "PARSED FIELDS" in user_prompt or "STRUCTURED EXTRACTION" in user_prompt or ("CLIENT" in user_prompt and "REGISTRATION" in user_prompt):
+        return _triage_canned(user_prompt)
     for filename, payload in _CANNED_BY_FILENAME.items():
         if filename in user_prompt:
             return json.dumps(payload)
 
-    fallback_key = __import__("os").environ.get("STUB_DEFAULT_CANNED", "").strip()
+    fallback_key = (get_settings().stub_default_canned or "").strip()
     if fallback_key:
         payload = _FALLBACK_BY_KEY.get(fallback_key)
         if payload is not None:
@@ -131,9 +295,21 @@ def _drafting_canned(user_prompt: str) -> str:
     fy_or_ay = _extract_after(user_prompt, "Financial year / Assessment year: ") or "—"
     tone = _extract_after(user_prompt, "Tone: ") or "formal"
     authority = _extract_after(user_prompt, "Authority: ") or "the learned officer"
-    due_date = _extract_after(user_prompt, "Due date: ") or "—"
+    due_date = (
+        _extract_after(user_prompt, "Due date (parsed): ")
+        or _extract_after(user_prompt, "Due date: ")
+        or "—"
+    )
+    law = _extract_after(user_prompt, "Law: ") or ""
 
     is_hearing = "HEARING" in notice_type.upper()
+    # Keep the canned draft regime-consistent: Income Tax replies cite
+    # direct-tax authority and the faceless-assessment hearing provision;
+    # GST replies keep the indirect-tax authorities.
+    from app.agents.regime_guidance import hearing_provision, regime_for_law
+
+    is_direct = regime_for_law(law) == "DIRECT"
+    hearing_ref = hearing_provision(law, notice_type)
 
     def p(html: str) -> str:
         return f"<p>{html}</p>"
@@ -207,23 +383,38 @@ def _drafting_canned(user_prompt: str) -> str:
         {
             "num": 6,
             "title": "Legal Submissions",
-            "body_html": p(
-                "It is well settled that a demand under the GST / Income Tax "
-                "Act cannot rest on suspicion alone — "
-                + cite(
-                    "Commissioner of GST v. Bharti Airtel Ltd., "
-                    "(2021) 6 SCC 257, para 24",
-                    "the Department bears the burden of establishing a "
-                    "demand on positive material",
+            "body_html": (
+                p(
+                    "It is well settled that an addition under the Income-tax "
+                    "Act, 1961 cannot rest on material that has not been put "
+                    "to the assessee — "
+                    + cite(
+                        "Kishinchand Chellaram v. CIT, (1980) 125 ITR 713 (SC)",
+                        "material relied upon against the assessee must be "
+                        "disclosed and an opportunity given to rebut it",
+                    )
+                    + ". The assessee's books and the enclosed annexures "
+                    "fully explain the items under scrutiny."
                 )
-                + ". The reasoning extends to scrutiny notices: "
-                + cite(
-                    "Larsen &amp; Toubro Ltd. v. State of Karnataka, "
-                    "(2014) 1 SCC 708, para 18",
-                    "reconciliation is sufficient response where the records "
-                    "bear out the position",
+                if is_direct
+                else p(
+                    "It is well settled that a demand under the GST Acts "
+                    "cannot rest on material withheld from the noticee — "
+                    + cite(
+                        "Andaman Timber Industries v. Commissioner of "
+                        "Central Excise (SC, 2015)",
+                        "material relied upon must be disclosed and its "
+                        "makers offered for cross-examination",
+                    )
+                    + ". The reasoning extends to scrutiny notices: "
+                    + cite(
+                        "Larsen &amp; Toubro Ltd. v. State of Karnataka, "
+                        "(2014) 1 SCC 708, para 18",
+                        "reconciliation is sufficient response where the records "
+                        "bear out the position",
+                    )
+                    + "."
                 )
-                + "."
             ),
         },
         {
@@ -283,7 +474,10 @@ def _drafting_canned(user_prompt: str) -> str:
                 "body_html": p(
                     "In light of the above, it is most respectfully prayed "
                     "that the proceedings initiated vide the captioned notice "
-                    "be dropped and any consequential demand be set aside."
+                    "be dropped and any consequential demand be set aside, and "
+                    "that the assessee be granted an opportunity of personal "
+                    f"hearing under {hearing_ref} before any adverse order is "
+                    "passed."
                 ),
             },
             {
@@ -313,9 +507,14 @@ def _drafting_canned(user_prompt: str) -> str:
                 "body_html": p(
                     "&bull; Verify all annexures are paginated and stamped.\n"
                     "&bull; Obtain the partner&rsquo;s signature on the reply.\n"
-                    "&bull; File via the GST portal acknowledgement (or email "
-                    "to the listed authority address).\n"
-                    "&bull; Diary the acknowledgement and update lifecycle "
+                    + (
+                        "&bull; File via the Income Tax e-filing portal "
+                        "(e-Proceedings) and save the acknowledgement.\n"
+                        if is_direct
+                        else "&bull; File via the GST portal acknowledgement (or "
+                        "email to the listed authority address).\n"
+                    )
+                    + "&bull; Diary the acknowledgement and update lifecycle "
                     "to Reply Submitted."
                 ),
             },
@@ -350,3 +549,50 @@ def _extract_after(haystack: str, marker: str) -> str:
 def _extract_pan(haystack: str) -> str | None:
     m = re.search(r"PAN ([A-Z]{5}[0-9]{4}[A-Z])", haystack)
     return m.group(1) if m else None
+
+
+def _triage_canned(user_prompt: str) -> str:
+    legal_name = _extract_after(user_prompt, "Legal name        : ") or "the assessee"
+    doc_type = _extract_after(user_prompt, "Document type     : ") or "tax notice"
+    period = _extract_after(user_prompt, "Period            : ") or "the relevant period"
+    demand = _extract_after(user_prompt, "Demand amount     : ") or "unspecified"
+
+    summary = (
+        f"The proper officer has issued a {doc_type} alleging discrepancies and statutory non-compliance for {period} in respect of {legal_name}. The demand involved is recorded as {demand}.\n\n"
+        f"Procedurally, a detailed reply must be filed along with evidentiary supporting documents before the statutory due date to prevent adverse ex-parte assessment or demand confirmation.\n\n"
+        f"Technically, the response requires reconciling the declared figures against statutory returns and books of account, supported by relevant invoices, ledgers, and proof of payment."
+    )
+
+    checklist = [
+        {
+            "label": "Annual / Periodic Return Reconciliation",
+            "rationale": "Reconcile outward and inward supplies declared in returns against financial statements.",
+            "doc_type": "reconciliation",
+            "is_required": True,
+            "position": 1,
+        },
+        {
+            "label": "Relevant Tax Invoices & Supply Ledgers",
+            "rationale": "Substantiate actual receipt of goods/services and correctness of tax charged/availed.",
+            "doc_type": "invoice",
+            "is_required": True,
+            "position": 2,
+        },
+        {
+            "label": "Bank Statements Showing Payments",
+            "rationale": "Evidencing actual consideration paid and tax discharged through official banking channels.",
+            "doc_type": "bank_statement",
+            "is_required": True,
+            "position": 3,
+        },
+        {
+            "label": "Statutory Return Filings (GSTR-3B / ITR)",
+            "rationale": "Confirm periodic compliance and timely discharge of tax liability.",
+            "doc_type": "gstr_3b",
+            "is_required": False,
+            "position": 4,
+        },
+    ]
+    return json.dumps({"summary": summary, "checklist": checklist})
+
+

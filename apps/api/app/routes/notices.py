@@ -27,6 +27,7 @@ Slice 6 adds the matter-view surface:
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from typing import Annotated, Any, Literal
 from uuid import UUID
@@ -423,7 +424,7 @@ async def create_notice(ctx: CurrentContext, body: CreateNoticeRequest) -> dict[
                 "fy": body.financial_year,
                 "ay": body.assessment_year,
                 "ichan": body.ingest_channel,
-                "raw": __import__("json").dumps(raw_json),
+                "raw": json.dumps(raw_json),
             },
         )
     ).scalar_one()

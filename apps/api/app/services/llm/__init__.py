@@ -10,6 +10,7 @@ from app.services.llm.base import (
     JsonSchemaValidationError,
     LLMError,
     LLMProvider,
+    LLMRateLimitError,
     LLMResponse,
     LLMTransientError,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "KNOWN_LLM_PROVIDERS",
     "LLMError",
     "LLMProvider",
+    "LLMRateLimitError",
     "LLMResponse",
     "LLMTransientError",
     "get_llm_for_agent",

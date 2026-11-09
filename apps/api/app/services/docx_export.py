@@ -8,11 +8,12 @@ Produces .docx in Vipul's filing-grade preferences:
   - Cover sheet on Filing version with client/PAN/registration/notice/FY/AY/due
 
 Three modes:
-  - filing   → excludes Section 13 (internal note) and Section 14 (client summary).
+  - filing   → excludes Section 13 (internal note), Section 14 (client summary)
+               and Section 15 (filing checklist — the firm's to-do list).
                Also scrubs [ASSUMED] / [DOCUMENT REQUESTED] internal markers and
                drops the "Footnotes — Citations removed" section (those are
                working-paper artefacts that must never reach the department).
-  - client   → excludes Section 13; includes Section 14. Same scrubbing as
+  - client   → excludes Sections 13 and 15; includes Section 14. Same scrubbing as
                filing (the client doesn't need to see firm-internal todos).
   - internal → full draft including all sections + internal note. Markers
                and footnotes survive.
@@ -64,17 +65,48 @@ class CoverSheetData:
     due_date: str | None
 
 
+# Section 15 (Filing Checklist) is the firm's own to-do list ("verify DIN",
+# "obtain DSC") — it must not reach the department or the client.
+FILING_CHECKLIST_NUM = 15
+
+
 def _exclude_sections(mode: ExportMode) -> set[int]:
     if mode == "filing":
-        return {13, 14}
+        return {13, 14, FILING_CHECKLIST_NUM}
     if mode == "client":
-        return {13}
+        return {13, FILING_CHECKLIST_NUM}
     return set()
+
+
+def _is_filing_checklist(s: dict[str, Any]) -> bool:
+    # By title too: a reply-format override can renumber the checklist.
+    return "filing checklist" in str(s.get("title", "")).strip().lower()
+
+
+# The marker plus the spacing / punctuation around it. Removing the bare
+# marker turned "time. [DOCUMENT REQUESTED — ...]." into "time. ." in the
+# filing copy; this form eats the leading space and, when the marker sat
+# between two sentence ends, the duplicate full stop after it.
+_MARKER_IN_CONTEXT_RE = re.compile(
+    r"(?P<pre>[.;:!?])?[ \t]*" + _INTERNAL_MARKER_RE.pattern + r"(?P<post>[.,;:])?",
+    re.IGNORECASE,
+)
+
+
+def _drop_marker(m: re.Match[str]) -> str:
+    pre = m.group("pre") or ""
+    post = m.group("post") or ""
+    return pre if pre else post
+
+
+# "<li>[DOCUMENT REQUESTED] Bank statements" leaves "<li> Bank statements".
+_LEADING_SPACE_RE = re.compile(r"(<(?:p|li)>)[ \t]+", re.IGNORECASE)
 
 
 def _scrub_internal_markers(html: str) -> str:
     """Remove [ASSUMED ...] / [DOCUMENT REQUESTED ...] markers from body html."""
-    return _INTERNAL_MARKER_RE.sub("", html)
+    out = _MARKER_IN_CONTEXT_RE.sub(_drop_marker, html)
+    return _LEADING_SPACE_RE.sub(r"\1", out)
 
 
 def _is_footnote_section(s: dict[str, Any]) -> bool:
@@ -113,6 +145,8 @@ def render_draft_docx(
     for s in sections:
         num = int(s.get("num", 0))
         if num in exclude:
+            continue
+        if mode != "internal" and _is_filing_checklist(s):
             continue
         if drop_footnote_section and _is_footnote_section(s):
             continue

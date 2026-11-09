@@ -18,7 +18,7 @@ Phase 2/3; the interface is structured so adding them is a config flip.
 from __future__ import annotations
 
 import abc
-import os
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -29,6 +29,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.citation_whitelist import lookup_canonical
+from app.core.config import get_settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -122,7 +123,11 @@ class CitationProvider(abc.ABC):
 
     @abc.abstractmethod
     async def verify(
-        self, case_name: str, citation_string: str | None
+        self,
+        case_name: str,
+        citation_string: str | None,
+        *,
+        regime: str | None = None,
     ) -> VerificationResult:
         ...
 
@@ -132,7 +137,6 @@ class CitationProvider(abc.ABC):
 
 _STUB_VERIFIED: dict[str, str] = {
     # case-name substring → IndianKanoon-style URL (placeholder)
-    "bharti airtel": "https://indiankanoon.org/doc/00000001/",
     "larsen": "https://indiankanoon.org/doc/00000002/",
     "andaman timber": "https://indiankanoon.org/doc/00000003/",
 }
@@ -142,7 +146,11 @@ class StubCitationProvider(CitationProvider):
     name = "stub"
 
     async def verify(
-        self, case_name: str, citation_string: str | None
+        self,
+        case_name: str,
+        citation_string: str | None,
+        *,
+        regime: str | None = None,
     ) -> VerificationResult:
         needle = case_name.lower()
         for key, url in _STUB_VERIFIED.items():
@@ -185,18 +193,31 @@ class IndianKanoonProvider(CitationProvider):
     TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 
     def __init__(self, api_token: str | None = None) -> None:
-        self._token = api_token or os.environ.get("INDIANKANOON_API_TOKEN", "")
+        self._token = (
+            api_token
+            if api_token is not None
+            else (get_settings().indiankanoon_api_token or "")
+        )
 
     async def verify(
-        self, case_name: str, citation_string: str | None
+        self,
+        case_name: str,
+        citation_string: str | None,
+        *,
+        regime: str | None = None,
     ) -> VerificationResult:
-        params: dict[str, str] = {"formInput": case_name}
+        # Scope the search to the courts / tribunals of the notice's regime
+        # so an Income Tax reply isn't "verified" against a CESTAT ruling.
+        query = case_name
+        if regime == "DIRECT":
+            query = f"{case_name} doctypes: supremecourt,highcourts,itat"
+        params: dict[str, str] = {"formInput": query}
         headers: dict[str, str] = {"User-Agent": "NoticeDesk/0.1"}
         if self._token:
             headers["Authorization"] = f"Token {self._token}"
         try:
             async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
-                resp = await client.get(self.BASE_URL, params=params, headers=headers)
+                resp = await client.post(self.BASE_URL, data=params, headers=headers)
         except httpx.HTTPError as e:
             logger.warning("indiankanoon transient error: %s", e)
             return VerificationResult(
@@ -363,15 +384,128 @@ async def _cache_put(
     )
 
 
+
+# ---- Gemini LLM provider (Tier 1 AI verifier) -----------------------------
+
+
+class GeminiCitationProvider(CitationProvider):
+    """AI citation verifier using Gemini / OpenAI-compatible endpoint.
+
+    Verifies whether a cited judgment genuinely exists in Indian law,
+    extracts its court, deciding year, legal proposition, and canonical URL.
+    """
+
+    name = "gemini"
+
+    SYSTEM_PROMPT = """You are an expert Indian tax law citation verifier.
+Given a case name and citation string, verify if it is a genuine Indian court judgment.
+Return a JSON object with:
+- is_genuine (boolean)
+- court (string or null)
+- year (string or null)
+- indiankanoon_url (string URL if known, else null)
+- proposition (string summarizing the ruling, or null)
+- confidence (float between 0.0 and 1.0)
+- regime ("DIRECT" for Income-tax Act / ITAT matters, "INDIRECT" for GST /
+  Central Excise / Customs / Service Tax / VAT / CESTAT matters, "ANY" for
+  general constitutional / natural-justice rulings)
+"""
+
+    async def verify(
+        self,
+        case_name: str,
+        citation_string: str | None,
+        *,
+        regime: str | None = None,
+    ) -> VerificationResult:
+        from app.core.config import get_settings
+        from app.services.llm.openai import OpenAIProvider
+
+        s = get_settings()
+        api_key = s.gemini_api_key or s.openai_api_key
+        if not api_key:
+            return VerificationResult(
+                status="UNVERIFIED",
+                source_url=None,
+                verified_paragraph_text=None,
+                proposition_match_confidence=None,
+                raw_response={"error": "no API key configured for gemini citation verifier"},
+            )
+
+        provider = OpenAIProvider(
+            api_key=api_key,
+            model=s.openai_model,
+            base_url=s.openai_base_url or None,
+        )
+
+        user_prompt = f"Case: {case_name}"
+        if citation_string:
+            user_prompt += f", {citation_string}"
+        if regime:
+            user_prompt += f"\nThe citing reply is a {regime} tax matter."
+
+        try:
+            resp = await provider.generate_text(
+                system=self.SYSTEM_PROMPT,
+                user=user_prompt,
+                temperature=0.0,
+            )
+            data = json.loads(resp.content)
+        except Exception as e:
+            logger.warning("gemini citation verification error: %s", e)
+            return VerificationResult(
+                status="UNVERIFIED",
+                source_url=None,
+                verified_paragraph_text=None,
+                proposition_match_confidence=None,
+                raw_response={"error": str(e)},
+            )
+
+        is_genuine = data.get("is_genuine", False)
+        confidence = float(data.get("confidence") or 0.0)
+
+        if not is_genuine:
+            return VerificationResult(
+                status="UNVERIFIED",
+                source_url=None,
+                verified_paragraph_text=None,
+                proposition_match_confidence=0.0,
+                raw_response=data,
+            )
+
+        status = "VERIFIED" if confidence >= 0.8 else "VERIFIED_PARTIAL"
+        proposition = data.get("proposition")
+        case_regime = str(data.get("regime") or "").upper()
+        if regime and case_regime in ("DIRECT", "INDIRECT") and case_regime != regime:
+            status = "VERIFIED_PARTIAL"
+            proposition = _cross_regime_note(case_regime, regime) + (
+                f" {proposition}" if proposition else ""
+            )
+        return VerificationResult(
+            status=status,
+            source_url=data.get("indiankanoon_url"),
+            verified_paragraph_text=proposition,
+            proposition_match_confidence=confidence,
+            raw_response=data,
+        )
+
+
 def get_provider() -> CitationProvider:
     """Pick the configured Tier 1 provider.
 
-    Defaults to the stub so dev / CI runs offline. ``CITATION_PROVIDER=indiankanoon``
-    flips to the real provider; an INDIANKANOON_API_TOKEN env var is honoured if set.
+    Defaults to the stub so dev / CI runs offline.
+    'gemini' or 'indiankanoon' (without token) uses the live Gemini citation verifier.
+    'indiankanoon' with INDIANKANOON_API_TOKEN uses the IndianKanoon API.
     """
-    name = os.environ.get("CITATION_PROVIDER", "stub").lower()
+    s = get_settings()
+    name = (s.citation_provider or "stub").lower()
+    if name in ("gemini", "openai"):
+        return GeminiCitationProvider()
     if name == "indiankanoon":
-        return IndianKanoonProvider()
+        token = s.indiankanoon_api_token or ""
+        if token:
+            return IndianKanoonProvider(api_token=token)
+        return GeminiCitationProvider()
     return StubCitationProvider()
 
 
@@ -385,10 +519,24 @@ class VerifiedCitation:
     action_taken: str  # 'passed' | 'flagged' | 'stripped'
 
 
+def _cross_regime_note(case_regime: str, draft_regime: str) -> str:
+    label = {
+        "DIRECT": "direct-tax (Income-tax)",
+        "INDIRECT": "indirect-tax (GST / excise / customs)",
+    }
+    return (
+        f"Cross-regime authority: a {label.get(case_regime, case_regime)} "
+        f"decision cited in a {label.get(draft_regime, draft_regime)} reply "
+        "— confirm it is genuinely applicable or replace it before filing."
+    )
+
+
 async def verify_citations(
     session: AsyncSession,
     extracted: list[ExtractedCitation],
     provider: CitationProvider | None = None,
+    *,
+    regime: str | None = None,
 ) -> list[VerifiedCitation]:
     """Verify each extracted citation.
 
@@ -401,19 +549,35 @@ async def verify_citations(
       2. citation_cache table (30-day TTL) — repeat lookups across drafts
          skip the network.
       3. Configured provider (stub or IndianKanoon).
+
+    ``regime`` ("DIRECT" / "INDIRECT", from the matter's law) scopes the
+    lookup: authorities from the other tax regime are downgraded to
+    VERIFIED_PARTIAL (flagged for the partner) instead of passing silently.
     """
     p = provider or get_provider()
+    # Regime-scoped lookups can resolve differently, so they cache apart.
+    cache_provider = f"{p.name}:{regime}" if regime else p.name
     out: list[VerifiedCitation] = []
     for ec in extracted:
         # 1. Canonical whitelist short-circuit.
         canonical = lookup_canonical(ec.case_name)
         if canonical is not None:
+            cross_regime = regime is not None and canonical.regime not in (regime, "ANY")
             result = VerificationResult(
-                status="VERIFIED",
+                status="VERIFIED_PARTIAL" if cross_regime else "VERIFIED",
                 source_url=canonical.canonical_url,
-                verified_paragraph_text=canonical.proposition,
-                proposition_match_confidence=0.99,
-                raw_response={"canonical": True, "name": canonical.name},
+                verified_paragraph_text=(
+                    f"{_cross_regime_note(canonical.regime, regime)} {canonical.proposition}"
+                    if cross_regime
+                    else canonical.proposition
+                ),
+                proposition_match_confidence=0.4 if cross_regime else 0.99,
+                raw_response={
+                    "canonical": True,
+                    "name": canonical.name,
+                    "regime": canonical.regime,
+                    "cross_regime": cross_regime,
+                },
             )
         else:
             # 2. Cache.
@@ -421,18 +585,18 @@ async def verify_citations(
                 session,
                 case_name=ec.case_name,
                 citation_string=ec.citation_string,
-                provider=p.name,
+                provider=cache_provider,
             )
             # 3. Provider call.
             result = cached if cached is not None else await p.verify(
-                ec.case_name, ec.citation_string
+                ec.case_name, ec.citation_string, regime=regime
             )
             if cached is None:
                 await _cache_put(
                     session,
                     case_name=ec.case_name,
                     citation_string=ec.citation_string,
-                    provider=p.name,
+                    provider=cache_provider,
                     result=result,
                 )
         action = {

@@ -19,7 +19,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const tick = useCallback(async () => {
     try {
       const res = await fetchInbox();
-      setAwaiting(res.total);
+      setAwaiting(res.awaiting_review);
     } catch {
       // Ignore — the next tick will retry.
     }

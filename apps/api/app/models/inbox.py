@@ -18,6 +18,7 @@ RoutingStatus = Literal[
     "pan_gstin_mismatch",
     "no_identifier_found",
     "manual_assignment",
+    "rejected",
 ]
 IngestChannel = Literal[
     "web_upload",
@@ -52,7 +53,11 @@ class InboxItem(BaseModel):
 
 class InboxList(BaseModel):
     items: list[InboxItem]
+    # Every inbox row (paging). Use awaiting_review for "N awaiting" badges.
     total: int
+    # Rows that still need a partner: not yet routed to a matter and not
+    # rejected.
+    awaiting_review: int = 0
 
 
 class UploadResponse(BaseModel):

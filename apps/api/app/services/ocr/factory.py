@@ -1,7 +1,6 @@
 """OCR factory keyed off ``OCR_PROVIDER_PRIMARY`` / ``OCR_PROVIDER_FALLBACK``.
 
-Switching primary from ``google_doc_ai`` to ``azure_doc_intel`` is a config
-change, not a code change — that's the entire point of the abstraction.
+Switching primary between providers is a config change, not a code change.
 """
 
 from __future__ import annotations
@@ -12,10 +11,13 @@ from functools import lru_cache
 from app.core.config import get_settings
 from app.services.ocr.azure_document_intelligence import AzureDocumentIntelligenceProvider
 from app.services.ocr.base import OCRError, OCRProvider
+from app.services.ocr.gemini import GeminiOCRProvider
 from app.services.ocr.google_document_ai import GoogleDocumentAIProvider
 from app.services.ocr.stub import StubOCRProvider
 
-KNOWN_PROVIDERS: frozenset[str] = frozenset({"google_doc_ai", "azure_doc_intel", "stub"})
+KNOWN_PROVIDERS: frozenset[str] = frozenset(
+    {"google_doc_ai", "azure_doc_intel", "gemini", "stub"}
+)
 
 
 def _build_google() -> OCRProvider:
@@ -49,6 +51,18 @@ def _build_azure() -> OCRProvider:
     )
 
 
+def _build_gemini() -> OCRProvider:
+    s = get_settings()
+    api_key = s.gemini_api_key or s.openai_api_key
+    if not api_key:
+        raise OCRError("GEMINI_API_KEY or OPENAI_API_KEY must be set for gemini OCR")
+    return GeminiOCRProvider(
+        api_key=api_key,
+        model=s.gemini_model or s.openai_model or "gemini-3-flash-preview",
+        fallback_models=s.openai_fallback_model_list,
+    )
+
+
 def _build_stub() -> OCRProvider:
     return StubOCRProvider()
 
@@ -56,6 +70,7 @@ def _build_stub() -> OCRProvider:
 _BUILDERS: dict[str, Callable[[], OCRProvider]] = {
     "google_doc_ai": _build_google,
     "azure_doc_intel": _build_azure,
+    "gemini": _build_gemini,
     "stub": _build_stub,
 }
 

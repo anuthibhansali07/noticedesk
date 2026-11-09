@@ -22,11 +22,18 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.regime_guidance import (
+    FormatProfile,
+    render_format_profile,
+    render_regime_guidance,
+)
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.llm import (
     JsonSchemaValidationError,
     LLMError,
     LLMProvider,
+    LLMRateLimitError,
     LLMTransientError,
     get_llm_for_agent,
     get_secondary_llm_for_agent,
@@ -35,20 +42,20 @@ from app.services.llm import (
 logger = get_logger(__name__)
 
 PROMPTS_DIR: Final[Path] = Path(__file__).parent / "prompts"
-PROMPT_VERSION: Final[str] = "drafting_v3"
+PROMPT_VERSION: Final[str] = "drafting_v4"
 
 # Per-document excerpt cap for triage-attached supporting evidence. 5K chars
 # (~1.2K tokens) is enough for the drafter to extract figures + key dates;
 # bigger uploads (full GSTR-3B PDFs, ITC ledger dumps) get truncated. Total
 # block size is capped further by SUPPORTING_EVIDENCE_MAX_CHARS.
-SUPPORTING_DOC_EXCERPT_CHARS: Final[int] = int(
-    __import__("os").environ.get("DRAFTING_SUPPORTING_DOC_EXCERPT_CHARS", "5000")
+SUPPORTING_DOC_EXCERPT_CHARS: Final[int] = (
+    get_settings().drafting_supporting_doc_excerpt_chars
 )
 # Overall ceiling so a partner who attaches 20 docs doesn't blow the input
 # token budget. Items beyond this cap are listed by filename but excerpt is
 # omitted; the drafter can still reference them by name.
-SUPPORTING_EVIDENCE_MAX_CHARS: Final[int] = int(
-    __import__("os").environ.get("DRAFTING_SUPPORTING_EVIDENCE_MAX_CHARS", "40000")
+SUPPORTING_EVIDENCE_MAX_CHARS: Final[int] = (
+    get_settings().drafting_supporting_evidence_max_chars
 )
 
 # How many characters of notice OCR text to feed the drafter. 20K handles
@@ -56,8 +63,8 @@ SUPPORTING_EVIDENCE_MAX_CHARS: Final[int] = int(
 # partners with long-tail notices can bump via DRAFTING_OCR_EXCERPT_CHARS
 # in apps/api/.env. Claude Opus 4.7 has 200K context so the model is fine;
 # the cap exists for cost predictability (each char ≈ 0.25 input tokens).
-NOTICE_OCR_EXCERPT_CHARS: Final[int] = int(
-    __import__("os").environ.get("DRAFTING_OCR_EXCERPT_CHARS", "20000")
+NOTICE_OCR_EXCERPT_CHARS: Final[int] = (
+    get_settings().drafting_ocr_excerpt_chars
 )
 
 # Output cap for the drafting call. The v2 prompt produces ALL 15 sections
@@ -68,8 +75,8 @@ NOTICE_OCR_EXCERPT_CHARS: Final[int] = int(
 # default and let partners crank further via env if a notice still trips.
 # Output tokens are charged only when actually emitted, so a high cap costs
 # nothing on short drafts.
-DRAFTING_MAX_OUTPUT_TOKENS: Final[int] = int(
-    __import__("os").environ.get("DRAFTING_MAX_OUTPUT_TOKENS", "16000")
+DRAFTING_MAX_OUTPUT_TOKENS: Final[int] = (
+    get_settings().drafting_max_output_tokens
 )
 
 Tone = Literal["formal", "assertive", "conciliatory"]
@@ -149,6 +156,8 @@ class DraftingInput:
     # the drafter degrades cleanly to the v2 behaviour in that case.
     supporting_documents: list[SupportingDoc] = field(default_factory=list)
     pending_requirements: list[PendingRequirement] = field(default_factory=list)
+    # Reply shape the partner picked (full 15-section / tabular / adjournment).
+    format_profile: FormatProfile = "full_submission"
 
 
 async def load_drafting_input(
@@ -159,6 +168,7 @@ async def load_drafting_input(
     tone: Tone,
     partner_instructions: str,
     include_cross_registration: bool = False,
+    format_profile: FormatProfile = "full_submission",
 ) -> DraftingInput:
     """Pull every fact the drafter is allowed to see, scoped to the matter's
     own registration. ``include_cross_registration`` is the explicit
@@ -375,6 +385,7 @@ async def load_drafting_input(
         cross_registration_context=cross_block,
         supporting_documents=supporting_docs,
         pending_requirements=pending_reqs,
+        format_profile=format_profile,
     )
 
 
@@ -388,7 +399,7 @@ def _load_prompt_template() -> tuple[str, str]:
     sys_prompt = _extract_fenced(sys_section)
     user_template = _extract_fenced(user_section)
     if not sys_prompt or not user_template:
-        raise LLMError("drafting_v1.md is missing the expected fenced blocks")
+        raise LLMError(f"{PROMPT_VERSION}.md is missing the expected fenced blocks")
     return sys_prompt, user_template
 
 
@@ -484,6 +495,11 @@ def _render_user_prompt(template: str, di: DraftingInput) -> str:
                 else "—"
             ),
         )
+        .replace(
+            "{regime_guidance_block}",
+            render_regime_guidance(di.law, di.notice.get("document_type")),
+        )
+        .replace("{format_profile_block}", render_format_profile(di.format_profile))
         .replace("{notice_ocr_excerpt}", ocr_block)
         .replace("{supporting_evidence_block}", supporting_evidence_block)
         .replace(
@@ -506,8 +522,8 @@ def _format_list(items: list[dict[str, Any]], fmt, *, empty: str) -> str:
 
 
 def _render_supporting_evidence(
-    docs: list["SupportingDoc"],
-    pending: list["PendingRequirement"],
+    docs: list[SupportingDoc],
+    pending: list[PendingRequirement],
 ) -> str:
     """Render the SUPPORTING EVIDENCE block for the user prompt.
 
@@ -551,7 +567,10 @@ def _render_supporting_evidence(
             budget -= len(chunk)
 
     if pending:
-        parts.append("\nPENDING — not attached (write [DOCUMENT REQUESTED] for facts that would have come from these):")
+        parts.append(
+            "\nPENDING — not attached (write [DOCUMENT REQUESTED] "
+            "for facts that would have come from these):"
+        )
         for p in pending:
             tag = "REQUIRED" if p.is_required else "optional"
             parts.append(f"  - [{tag}] {p.label} — {p.rationale}")
@@ -622,6 +641,9 @@ async def generate_draft(di: DraftingInput) -> GeneratedDraft:
     user = _render_user_prompt(user_template, di)
 
     last_err: Exception | None = None
+    # A rate limit on either provider is the most actionable failure for the
+    # partner ("wait N seconds") so it wins over e.g. a secondary's bad JSON.
+    last_rate_limit: LLMRateLimitError | None = None
     for provider in (
         get_llm_for_agent("drafting"),
         get_secondary_llm_for_agent("drafting"),
@@ -647,9 +669,14 @@ async def generate_draft(di: DraftingInput) -> GeneratedDraft:
         except LLMTransientError as e:
             logger.warning("drafting transient error from %s: %s", provider.name, e)
             last_err = e
+            if isinstance(e, LLMRateLimitError):
+                last_rate_limit = e
             continue
         except (LLMError, JsonSchemaValidationError) as e:
-            logger.exception("drafting failed via %s", provider.name)
+            # Bad JSON / schema from one provider shouldn't stop us trying
+            # the secondary — same policy as the triage agent.
+            logger.exception("drafting failed via %s: %s", provider.name, e)
             last_err = e
-            break
-    raise LLMError(f"drafting failed: {last_err}") from last_err
+            continue
+    final_err = last_rate_limit or last_err
+    raise LLMError(f"drafting failed: {final_err}") from final_err
